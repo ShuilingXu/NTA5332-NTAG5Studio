@@ -1,0 +1,5 @@
+C:\Users\Admin\Desktop\NFC_Driver_20.0.0.1\dist\Ntag5Studio-1.0.1\Ntag5Studio.exe
+C:\Users\Admin\Desktop\NFC_Driver_20.0.0.1\dist\Ntag5Studio-1.0.1\Ntag5Studio.dll
+C:\Users\Admin\Desktop\NFC_Driver_20.0.0.1\dist\Ntag5Studio-1.0.1\Ntag5Studio.deps.json
+C:\Users\Admin\Desktop\NFC_Driver_20.0.0.1\dist\Ntag5Studio-1.0.1\Ntag5Studio.runtimeconfig.json
+C:\Users\Admin\Desktop\NFC_Driver_20.0.0.1\dist\Ntag5Studio-1.0.1\Ntag5Studio.pdb

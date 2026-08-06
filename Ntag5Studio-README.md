@@ -1,0 +1,61 @@
+# Ntag5 Studio
+
+Ntag5 Studio 是为本目录中的 NXP NTA5332 / NTAG 5 boost 驱动制作的 Windows 桌面工具。它通过供应商驱动 `\\.\SPBNFC01` 访问安装在机器内部 I²C 总线上的 NTAG5 模块。
+
+供应商驱动虽然派生自 Microsoft SpbTestTool，但实际使用函数基址 `0x100`：打开、关闭和写后读控制码分别为 `0x04000400`、`0x04000404`、`0x04000410`。
+
+它不是 PN532 读卡器软件，不能读取、破解、模拟或复制外部 M1/MIFARE 卡。
+
+## 主要功能
+
+- 读取 NTA5332 的 I²C 用户 EEPROM：块 `0x0000-0x01FE`，共 511 块、2044 字节。
+- 保存和打开原始 `.bin` 备份，并生成包含 SHA-256、时间和区域信息的 `.json` 元数据。
+- 以 4 字节块为单位编辑十六进制内容，ASCII 预览和差异高亮。
+- 写入前自动读取并备份当前芯片，只写变化块，每块等待 EEPROM 周期后回读校验。
+- 将十六进制、UTF-8 文本、十进制字节和 Base64 相互转换。
+- 离线解析 NFC Forum Type 5 Capability Container、TLV 和常见 NDEF Text/URI 记录。
+- 完整校验编辑区与芯片，并保留可复制的操作日志。
+
+## 启动
+
+1. 在目标机器上右键以管理员身份运行 `install.bat` 安装驱动。
+2. 在设备管理器确认 `NTAG5` 设备正常，硬件 ID 应为 `ACPI\NTAG5332`。
+3. 双击 `Start-Ntag5Studio.bat`。
+4. 保持驱动路径为 `\\.\SPBNFC01`，单击“连接”，再单击“读取芯片”。
+
+发布版依赖 Microsoft Windows Desktop Runtime 10。当前机器已经安装 .NET SDK 10，因此可以直接运行。
+
+## 备份与恢复
+
+- “保存备份”保存恰好 2044 字节的原始 `.bin` 文件，便于其它十六进制工具打开。
+- “打开备份”只载入离线编辑区，不会立即修改硬件。
+- “写入变化”会重新读取当前芯片，比较目标内容，弹出块数确认，并先将当前内容保存到：
+  `文档\Ntag5Studio\Backups`
+- 任何回读不一致都会立即停止写入并报告具体块地址。失败或取消后应重新读取芯片。
+
+## 安全边界
+
+程序只允许访问用户块 `0x0000-0x01FE`。以下区域不在代码接口中：
+
+- NFC 专用计数器块 `0x01FF`
+- 配置区 `0x1000` 起
+- SRAM `0x2000-0x203F`
+- 密码、锁定位、会话寄存器和原厂签名
+
+NTA5332 数据手册明确规定 EEPROM 块为 4 字节，I²C 写 EEPROM 时 N=3，即地址后必须发送 4 个数据字节；本工具严格按此格式写入。
+
+## 常见问题
+
+- “找不到文件/设备”：确认驱动已安装且设备已枚举；默认路径必须为 `\\.\SPBNFC01`。
+- “I²C 设备未响应”：检查模块供电、ACPI SPB 资源、I²C 地址和硬件连接；NFC 仲裁、EEPROM 写周期或禁用 I²C 也会导致失败。
+- 写入后内容不同：程序会停止并显示第一个失败块。不要连续重试，先重新读取并查看自动备份。
+- 受密码或写保护的用户块不会被本工具绕过，底层 NACK 会作为写入错误显示。
+
+## 开发与验证
+
+```powershell
+& 'C:\Program Files\dotnet\dotnet.exe' build .\Ntag5Studio\Ntag5Studio.csproj -c Release
+& 'C:\Program Files\dotnet\dotnet.exe' run --project .\Ntag5Studio.SelfTest\Ntag5Studio.SelfTest.csproj -c Release
+```
+
+本机未枚举到 `ACPI\NTAG5332`，因此发布前完成的是驱动二进制/样例接口核对、编译、离线自检和界面检查；真实硬件读写需要在装有该模块的目标机器上验证。
