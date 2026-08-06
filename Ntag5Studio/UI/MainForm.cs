@@ -17,13 +17,14 @@ public sealed partial class MainForm : Form
     private bool _busy;
     private bool _loadingGrid;
     private string _imageSource = "尚未载入";
+    private Ntag5RuntimeStatus? _runtimeStatus;
 
     public MainForm()
     {
         InitializeLayout();
         WireEvents();
         UpdateActionAvailability();
-        AppendLog("程序已启动。硬件范围固定为用户 EEPROM 0x0000-0x01FE（2044 字节）。");
+        AppendLog("程序已启动。连接后会读取 CONFIG_1_REG，判断 EEPROM / SRAM 运行状态。");
         AppendLog($"默认驱动路径：{SpbNtag5Device.DefaultDevicePath}");
     }
 
@@ -31,6 +32,7 @@ public sealed partial class MainForm : Form
     {
         _connectButton.Click += async (_, _) => await ToggleConnectionAsync();
         _readButton.Click += async (_, _) => await ReadChipAsync();
+        _runtimeStatusButton.Click += async (_, _) => await RefreshRuntimeStatusAsync(showDetails: true);
         _openButton.Click += (_, _) => OpenBackup();
         _saveButton.Click += (_, _) => SaveBackup();
         _writeButton.Click += async (_, _) => await WriteChangesAsync();
@@ -56,6 +58,8 @@ public sealed partial class MainForm : Form
 
         _convertButton.Click += (_, _) => ConvertInput();
         _loadImageForConversionButton.Click += (_, _) => LoadCurrentImageIntoConverter();
+        _copyOutputButton.Click += (_, _) => CopyCurrentOutput();
+        _outputTabs.SelectedIndexChanged += (_, _) => UpdateOutputInfo();
         _parseNdefButton.Click += (_, _) => ParseCurrentNdef();
         _insertBytesButton.Click += (_, _) => InsertConvertedBytes();
 
@@ -77,6 +81,8 @@ public sealed partial class MainForm : Form
         {
             await RunOperationAsync("正在断开驱动...", _ => Task.Run(_device.Disconnect));
             _baselineImage = null;
+            _runtimeStatus = null;
+            UpdateRuntimeStatusDisplay();
             AppendLog("已断开驱动。比较基准已清除，编辑区数据仍保留。");
             RefreshDifferenceDisplay();
             return;
@@ -90,13 +96,81 @@ public sealed partial class MainForm : Form
             AppendLog($"驱动连接成功：{path}");
             AppendLog("I²C 目标地址由 ACPI SPB 资源配置；NTA5332 出厂默认地址为 0x54。");
             SetStatus("已连接，可以读取芯片或打开备份");
+            await RefreshRuntimeStatusAsync(showDetails: false);
         }
     }
+
+    private async Task RefreshRuntimeStatusAsync(bool showDetails)
+    {
+        await RunOperationAsync("正在读取芯片运行状态...", async cancellationToken =>
+        {
+            var runtimeStatus = await ReadAndApplyRuntimeStatusAsync(cancellationToken, logResult: true);
+            SetStatus(runtimeStatus.IsSramMirrorActive
+                ? "检测到 SRAM 镜像：0x0000-0x003F 为易失性 SRAM"
+                : $"运行状态：{runtimeStatus.ArbiterModeDisplay}；用户区当前映射到 EEPROM");
+
+            if (showDetails)
+            {
+                MessageBox.Show(
+                    this,
+                    BuildRuntimeStatusDetails(runtimeStatus),
+                    "NTA5332 运行状态",
+                    MessageBoxButtons.OK,
+                    runtimeStatus.IsSramMirrorActive ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
+            }
+        });
+    }
+
+    private async Task<Ntag5RuntimeStatus> ReadAndApplyRuntimeStatusAsync(
+        CancellationToken cancellationToken,
+        bool logResult = false)
+    {
+        var runtimeStatus = await Task.Run(_device.ReadRuntimeStatus, cancellationToken);
+        _runtimeStatus = runtimeStatus;
+        UpdateRuntimeStatusDisplay();
+        if (logResult)
+        {
+            AppendLog(
+                $"运行状态：CONFIG_1_REG=0x{runtimeStatus.Config1Register:X2}，" +
+                $"{runtimeStatus.ArbiterModeDisplay}，SRAM {(runtimeStatus.SramEnabled ? "启用" : "关闭")}；" +
+                runtimeStatus.UserMemoryMappingDisplay);
+        }
+
+        return runtimeStatus;
+    }
+
+    private void UpdateRuntimeStatusDisplay()
+    {
+        if (_runtimeStatus is null)
+        {
+            _runtimeStateLabel.Text = "存储：未检测";
+            _runtimeStateLabel.ForeColor = Color.FromArgb(97, 97, 97);
+            return;
+        }
+
+        _runtimeStateLabel.Text = _runtimeStatus.CompactDisplay;
+        _runtimeStateLabel.ForeColor = _runtimeStatus.IsSramMirrorActive
+            ? Color.FromArgb(183, 86, 0)
+            : Accent;
+        _toolTip.SetToolTip(_runtimeStateLabel, BuildRuntimeStatusDetails(_runtimeStatus));
+    }
+
+    private static string BuildRuntimeStatusDetails(Ntag5RuntimeStatus runtimeStatus) =>
+        $"当前模式：{runtimeStatus.ArbiterModeDisplay}{Environment.NewLine}" +
+        $"SRAM：{(runtimeStatus.SramEnabled ? "已启用" : "未启用")}{Environment.NewLine}" +
+        $"用户区映射：{runtimeStatus.UserMemoryMappingDisplay}{Environment.NewLine}" +
+        $"主机用途：{runtimeStatus.UseCaseDisplay}{Environment.NewLine}" +
+        $"透传方向：{runtimeStatus.TransferDirectionDisplay}{Environment.NewLine}" +
+        $"CONFIG_1_REG：0x{runtimeStatus.Config1Register:X2}{Environment.NewLine}{Environment.NewLine}" +
+        (runtimeStatus.IsSramMirrorActive
+            ? "注意：前 256 字节断电后会丢失，不属于持久化 EEPROM。"
+            : "当前普通用户区读写访问的是持久化 EEPROM。");
 
     private async Task ReadChipAsync()
     {
         await RunOperationAsync("正在读取 2044 字节用户区...", async cancellationToken =>
         {
+            var runtimeStatus = await ReadAndApplyRuntimeStatusAsync(cancellationToken);
             var progress = new Progress<int>(value => _progressBar.Value = value);
             var bytes = await Task.Run(
                 () => _device.ReadUserMemory(progress, cancellationToken),
@@ -105,6 +179,7 @@ public sealed partial class MainForm : Form
             _baselineImage = (byte[])bytes.Clone();
             SetWorkingImage(bytes, $"芯片读取 {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
             AppendLog($"读取完成：{Ntag5Memory.UserBlockCount} 块，SHA-256 {Ntag5Memory.Sha256(bytes)}");
+            AppendLog($"本次读取映射：{runtimeStatus.UserMemoryMappingDisplay}");
             SetStatus("读取完成；黄色单元格将表示后续编辑与芯片基准的差异");
         });
     }
@@ -167,6 +242,7 @@ public sealed partial class MainForm : Form
 
         await RunOperationAsync("写入前正在读取当前芯片...", async cancellationToken =>
         {
+            var runtimeStatus = await ReadAndApplyRuntimeStatusAsync(cancellationToken, logResult: true);
             var readProgress = new Progress<int>(value => _progressBar.Value = value / 5);
             var current = await Task.Run(
                 () => _device.ReadUserMemory(readProgress, cancellationToken),
@@ -184,10 +260,16 @@ public sealed partial class MainForm : Form
 
             var firstBlock = changedBlocks[0];
             var lastBlock = changedBlocks[^1];
+            var touchesMirroredSram = runtimeStatus.IsSramMirrorActive &&
+                                      changedBlocks.Any(block => block <= Ntag5Memory.LastSramMirrorBlock);
+            var mappingWarning = touchesMirroredSram
+                ? "\r\n\r\n警告：变化包含 0x000-0x03F，这些块当前映射到 SRAM，断电后不会保留。"
+                : string.Empty;
             var confirmation = MessageBox.Show(
                 this,
                 $"将写入 {changedBlocks.Count} 个变化块（0x{firstBlock:X3} 至 0x{lastBlock:X3} 范围内）。\r\n\r\n" +
-                "程序会先把当前芯片完整备份到“文档\\Ntag5Studio\\Backups”，然后逐块写入并回读校验。\r\n\r\n继续写入吗？",
+                "程序会先把当前芯片完整备份到“文档\\Ntag5Studio\\Backups”，然后逐块写入并回读校验。" +
+                mappingWarning + "\r\n\r\n继续写入吗？",
                 "确认写入 NTAG5 用户区",
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Warning,
@@ -242,6 +324,7 @@ public sealed partial class MainForm : Form
         var expected = GetWorkingSnapshot();
         await RunOperationAsync("正在读取芯片并校验...", async cancellationToken =>
         {
+            await ReadAndApplyRuntimeStatusAsync(cancellationToken);
             var progress = new Progress<int>(value => _progressBar.Value = value);
             var actual = await Task.Run(
                 () => _device.ReadUserMemory(progress, cancellationToken),
@@ -478,10 +561,41 @@ public sealed partial class MainForm : Form
             _convertedBytes = bytes;
             _hexOutputBox.Text = HexCodec.ToSpacedHex(bytes);
             _utf8OutputBox.Text = HexCodec.ToUtf8(bytes);
+            _asciiOutputBox.Text = HexCodec.ToAscii(bytes);
+            _utf16LeOutputBox.Text = HexCodec.ToUtf16LittleEndian(bytes);
+            _utf16BeOutputBox.Text = HexCodec.ToUtf16BigEndian(bytes);
+            _gb18030OutputBox.Text = HexCodec.ToGb18030(bytes);
             _decimalOutputBox.Text = HexCodec.ToDecimal(bytes);
+            _binaryOutputBox.Text = HexCodec.ToBinary(bytes);
             _base64OutputBox.Text = Convert.ToBase64String(bytes);
+            _urlPercentOutputBox.Text = HexCodec.ToUrlPercent(bytes);
+            UpdateOutputInfo();
             SetStatus($"编码转换完成：{bytes.Length} 字节");
         });
+    }
+
+    private void CopyCurrentOutput()
+    {
+        TryUserAction("复制转换结果", () =>
+        {
+            var output = _outputTabs.SelectedTab?.Controls.OfType<RichTextBox>().FirstOrDefault();
+            if (output is null || output.TextLength == 0)
+            {
+                throw new InvalidOperationException("当前结果为空，请先执行转换。");
+            }
+
+            Clipboard.SetText(output.Text);
+            SetStatus($"已复制 {_outputTabs.SelectedTab?.Text} 结果");
+        });
+    }
+
+    private void UpdateOutputInfo()
+    {
+        var output = _outputTabs.SelectedTab?.Controls.OfType<RichTextBox>().FirstOrDefault();
+        var format = _outputTabs.SelectedTab?.Text ?? "结果";
+        _outputInfoLabel.Text = output is null
+            ? "转换后可切换下方结果标签"
+            : $"{format}  |  {output.TextLength:N0} 个字符";
     }
 
     private void LoadCurrentImageIntoConverter()
@@ -570,6 +684,7 @@ public sealed partial class MainForm : Form
         _connectButton.Text = connected ? "断开" : "连接";
         _devicePathBox.Enabled = !_busy && !connected;
         _readButton.Enabled = !_busy && connected;
+        _runtimeStatusButton.Enabled = !_busy && connected;
         _openButton.Enabled = !_busy;
         _saveButton.Enabled = !_busy && _workingImage is not null;
         _writeButton.Enabled = !_busy && connected && _workingImage is not null;

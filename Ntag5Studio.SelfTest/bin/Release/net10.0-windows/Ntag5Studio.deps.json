@@ -6,7 +6,7 @@
   "compilationOptions": {},
   "targets": {
     ".NETCoreApp,Version=v10.0": {
-      "Ntag5Studio/1.0.1": {
+      "Ntag5Studio/1.1.0": {
         "runtime": {
           "Ntag5Studio.dll": {}
         }
@@ -14,7 +14,7 @@
     }
   },
   "libraries": {
-    "Ntag5Studio/1.0.1": {
+    "Ntag5Studio/1.1.0": {
       "type": "project",
       "serviceable": false,
       "sha512": ""

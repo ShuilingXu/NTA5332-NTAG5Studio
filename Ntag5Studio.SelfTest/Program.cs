@@ -3,6 +3,7 @@ using Ntag5Studio.Hardware;
 using Ntag5Studio.Services;
 using Ntag5Studio.UI;
 using System.Reflection;
+using System.Text;
 
 if (args.Length == 2 && args[0] == "--render-previews")
 {
@@ -15,9 +16,11 @@ var tests = new (string Name, Action Run)[]
     ("用户区边界", TestMemoryBounds),
     ("十六进制解析", TestHexCodec),
     ("十进制字节解析", TestDecimalCodec),
+    ("扩展编码往返", TestAdditionalEncodings),
     ("变化块检测", TestChangedBlocks),
     ("Type 5 / NDEF URI 解析", TestNdef),
     ("备份及元数据", TestBackup),
+    ("运行状态解析", TestRuntimeStatus),
     ("供应商设备路径", TestDevicePath),
     ("供应商驱动控制码", TestVendorIoctls)
 };
@@ -50,6 +53,27 @@ static void TestDecimalCodec()
 {
     var bytes = HexCodec.ParseDecimalBytes("0 64 128 255");
     Assert(bytes.SequenceEqual(new byte[] { 0, 64, 128, 255 }), "decimal parse result");
+}
+
+static void TestAdditionalEncodings()
+{
+    var utf8 = Encoding.UTF8.GetBytes("中文");
+    Assert(
+        HexCodec.Parse("%E4%B8%AD%E6%96%87", DataEncodingKind.UrlPercent).SequenceEqual(utf8),
+        "URL percent decode");
+    Assert(HexCodec.ToUrlPercent(utf8) == "%E4%B8%AD%E6%96%87", "URL percent encode");
+    Assert(
+        HexCodec.Parse("01000001 01000010", DataEncodingKind.BinaryBits).SequenceEqual(new byte[] { 0x41, 0x42 }),
+        "binary decode");
+    Assert(HexCodec.ToBinary(new byte[] { 0x41, 0x42 }) == "01000001 01000010", "binary encode");
+
+    var utf16Le = HexCodec.Parse("中文", DataEncodingKind.Utf16LittleEndian);
+    Assert(HexCodec.ToUtf16LittleEndian(utf16Le) == "中文", "UTF-16 LE round trip");
+    var utf16Be = HexCodec.Parse("中文", DataEncodingKind.Utf16BigEndian);
+    Assert(HexCodec.ToUtf16BigEndian(utf16Be) == "中文", "UTF-16 BE round trip");
+    var gb18030 = HexCodec.Parse("中文", DataEncodingKind.Gb18030Text);
+    Assert(HexCodec.ToGb18030(gb18030) == "中文", "GB18030 round trip");
+    Assert(HexCodec.Parse("ABC", DataEncodingKind.AsciiText).SequenceEqual(new byte[] { 0x41, 0x42, 0x43 }), "ASCII encode");
 }
 
 static void TestChangedBlocks()
@@ -103,6 +127,24 @@ static void TestDevicePath()
     Assert(SpbNtag5Device.DefaultDevicePath == @"\\.\SPBNFC01", "device path");
 }
 
+static void TestRuntimeStatus()
+{
+    var eeprom = new Ntag5RuntimeStatus(0x00);
+    Assert(!eeprom.SramEnabled, "SRAM disabled");
+    Assert(eeprom.ArbiterMode == Ntag5ArbiterMode.Normal, "normal mode");
+    Assert(!eeprom.IsSramMirrorActive, "EEPROM mapping");
+
+    var mirror = new Ntag5RuntimeStatus(0x06);
+    Assert(mirror.SramEnabled, "SRAM enabled");
+    Assert(mirror.ArbiterMode == Ntag5ArbiterMode.SramMirror, "mirror mode");
+    Assert(mirror.IsSramMirrorActive, "SRAM mirror active");
+    Assert(mirror.UserMemoryMappingDisplay.Contains("0x0000-0x003F：SRAM", StringComparison.Ordinal), "mirror mapping text");
+
+    var passThrough = new Ntag5RuntimeStatus(0x0B);
+    Assert(passThrough.ArbiterMode == Ntag5ArbiterMode.SramPassThrough, "pass-through mode");
+    Assert(passThrough.TransferDirectionNfcToI2c, "pass-through direction");
+}
+
 static void TestVendorIoctls()
 {
     const BindingFlags flags = BindingFlags.NonPublic | BindingFlags.Static;
@@ -110,6 +152,8 @@ static void TestVendorIoctls()
     Assert((uint)type.GetField("IoctlOpen", flags)!.GetRawConstantValue()! == 0x04000400, "open IOCTL");
     Assert((uint)type.GetField("IoctlClose", flags)!.GetRawConstantValue()! == 0x04000404, "close IOCTL");
     Assert((uint)type.GetField("IoctlWriteRead", flags)!.GetRawConstantValue()! == 0x04000410, "write/read IOCTL");
+    Assert((int)type.GetField("ConfigSessionBlockAddress", flags)!.GetRawConstantValue()! == 0x10A1, "CONFIG session block");
+    Assert((byte)type.GetField("Config1RegisterAddress", flags)!.GetRawConstantValue()! == 0x01, "CONFIG_1 register address");
 }
 
 static void Assert(bool condition, string name)
@@ -145,8 +189,12 @@ static void RenderPreviews(string outputDirectory)
     tabs.SelectedIndex = 0;
     Application.DoEvents();
     SaveControl(form, Path.Combine(outputDirectory, "Ntag5Studio-user-memory-940x650.png"));
+
+    tabs.SelectedIndex = 1;
+    Application.DoEvents();
+    SaveControl(form, Path.Combine(outputDirectory, "Ntag5Studio-converter-940x650.png"));
     form.Close();
-    Console.WriteLine("RENDER OK  3 previews");
+    Console.WriteLine("RENDER OK  4 previews");
 }
 
 static T? FindControl<T>(Control parent) where T : Control

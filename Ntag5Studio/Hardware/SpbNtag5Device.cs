@@ -16,6 +16,8 @@ public sealed class SpbNtag5Device : IDisposable
     private const uint IoctlOpen = 0x04000400;
     private const uint IoctlClose = 0x04000404;
     private const uint IoctlWriteRead = 0x04000410;
+    private const int ConfigSessionBlockAddress = 0x10A1;
+    private const byte Config1RegisterAddress = 0x01;
 
     private SafeFileHandle? _handle;
 
@@ -129,6 +131,36 @@ public sealed class SpbNtag5Device : IDisposable
         return output;
     }
 
+    public Ntag5RuntimeStatus ReadRuntimeStatus()
+    {
+        var config1 = ReadRegister(ConfigSessionBlockAddress, Config1RegisterAddress);
+        return new Ntag5RuntimeStatus(config1);
+    }
+
+    public byte ReadRegister(int blockAddress, byte registerAddress)
+    {
+        EnsureConnected();
+        if (blockAddress is < 0 or > ushort.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(blockAddress));
+        }
+
+        var request = new[]
+        {
+            (byte)(blockAddress >> 8),
+            (byte)blockAddress,
+            registerAddress
+        };
+        var output = new byte[1];
+        Control(IoctlWriteRead, request, output, out var returned);
+        if (returned != output.Length)
+        {
+            throw new IOException($"驱动返回了 {returned} 字节，读取寄存器时预期 1 字节。");
+        }
+
+        return output[0];
+    }
+
     public void WriteBlock(int blockAddress, ReadOnlySpan<byte> data)
     {
         EnsureConnected();
@@ -139,7 +171,7 @@ public sealed class SpbNtag5Device : IDisposable
 
         if (data.Length != Ntag5Memory.BytesPerBlock)
         {
-            throw new ArgumentException("EEPROM 每次必须写入恰好 4 字节。", nameof(data));
+            throw new ArgumentException("每次必须写入恰好一个 4 字节存储块。", nameof(data));
         }
 
         var request = new byte[2 + Ntag5Memory.BytesPerBlock];

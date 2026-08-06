@@ -14,7 +14,9 @@ public sealed partial class MainForm
     private readonly TextBox _devicePathBox = new();
     private readonly Button _connectButton = new();
     private readonly Label _connectionStateLabel = new();
+    private readonly Label _runtimeStateLabel = new();
     private readonly Button _readButton = new();
+    private readonly Button _runtimeStatusButton = new();
     private readonly Button _openButton = new();
     private readonly Button _saveButton = new();
     private readonly Button _writeButton = new();
@@ -33,10 +35,19 @@ public sealed partial class MainForm
     private readonly TextBox _conversionInputBox = new();
     private readonly Button _convertButton = new();
     private readonly Button _loadImageForConversionButton = new();
-    private readonly TextBox _hexOutputBox = new();
-    private readonly TextBox _utf8OutputBox = new();
-    private readonly TextBox _decimalOutputBox = new();
-    private readonly TextBox _base64OutputBox = new();
+    private readonly RichTextBox _hexOutputBox = new();
+    private readonly RichTextBox _utf8OutputBox = new();
+    private readonly RichTextBox _asciiOutputBox = new();
+    private readonly RichTextBox _utf16LeOutputBox = new();
+    private readonly RichTextBox _utf16BeOutputBox = new();
+    private readonly RichTextBox _gb18030OutputBox = new();
+    private readonly RichTextBox _decimalOutputBox = new();
+    private readonly RichTextBox _binaryOutputBox = new();
+    private readonly RichTextBox _base64OutputBox = new();
+    private readonly RichTextBox _urlPercentOutputBox = new();
+    private readonly TabControl _outputTabs = new();
+    private readonly Button _copyOutputButton = new();
+    private readonly Label _outputInfoLabel = new();
     private readonly Button _parseNdefButton = new();
     private readonly RichTextBox _ndefOutputBox = new();
     private readonly TextBox _insertOffsetBox = new();
@@ -61,7 +72,7 @@ public sealed partial class MainForm
             SizingGrip = false,
             BackColor = Color.White
         };
-        _statusLabel.Text = "就绪 - 当前仅操作用户 EEPROM 0x0000-0x01FE";
+        _statusLabel.Text = "就绪 - 连接后将自动检测 EEPROM / SRAM 映射";
         _statusLabel.Spring = true;
         _statusLabel.TextAlign = ContentAlignment.MiddleLeft;
         statusStrip.Items.Add(_statusLabel);
@@ -109,7 +120,7 @@ public sealed partial class MainForm
         };
         var subtitle = new Label
         {
-            Text = "NTA5332 / NTAG 5 boost 用户 EEPROM 备份、编辑与校验",
+            Text = "NTA5332 / NTAG 5 boost 用户存储区备份、编辑与校验",
             ForeColor = Color.FromArgb(207, 216, 220),
             AutoSize = true,
             Location = new Point(20, 39)
@@ -160,6 +171,12 @@ public sealed partial class MainForm
         _connectionStateLabel.AutoSize = true;
         _connectionStateLabel.Margin = new Padding(8, 6, 0, 0);
         bar.Controls.Add(_connectionStateLabel);
+        _runtimeStateLabel.Text = "存储：未检测";
+        _runtimeStateLabel.ForeColor = Color.FromArgb(97, 97, 97);
+        _runtimeStateLabel.AutoSize = true;
+        _runtimeStateLabel.Margin = new Padding(18, 6, 0, 0);
+        _toolTip.SetToolTip(_runtimeStateLabel, "连接后读取 CONFIG_1_REG，判断 SRAM 是否启用及用户区映射状态");
+        bar.Controls.Add(_runtimeStateLabel);
         return bar;
     }
 
@@ -177,6 +194,7 @@ public sealed partial class MainForm
         };
 
         ConfigureCommandButton(_readButton, "读取芯片", 96);
+        ConfigureCommandButton(_runtimeStatusButton, "运行状态", 96);
         ConfigureCommandButton(_openButton, "打开备份", 96);
         ConfigureCommandButton(_saveButton, "保存备份", 96);
         ConfigureCommandButton(_writeButton, "写入变化", 96, primary: true);
@@ -184,7 +202,7 @@ public sealed partial class MainForm
         ConfigureCommandButton(_cancelButton, "取消", 70);
         _cancelButton.Enabled = false;
 
-        bar.Controls.AddRange([_readButton, _openButton, _saveButton, _writeButton, _verifyButton]);
+        bar.Controls.AddRange([_readButton, _runtimeStatusButton, _openButton, _saveButton, _writeButton, _verifyButton]);
         _progressBar.Size = new Size(180, 22);
         _progressBar.Margin = new Padding(14, 3, 8, 0);
         _progressBar.Style = ProgressBarStyle.Continuous;
@@ -360,7 +378,7 @@ public sealed partial class MainForm
             MaximumSize = new Size(270, 0),
             ForeColor = Color.FromArgb(85, 85, 85),
             Padding = new Padding(4, 8, 4, 2),
-            Text = "仅访问 I²C 用户块 0x0000-0x01FE。配置区、密码、锁定位、原厂签名及 NFC 计数器均不会读取或写入。"
+            Text = "仅写入 I²C 用户块 0x0000-0x01FE。运行状态查询只读会话寄存器；如启用 SRAM 镜像，0x0000-0x003F 为易失性 SRAM。"
         };
         return label;
     }
@@ -372,7 +390,7 @@ public sealed partial class MainForm
         {
             Dock = DockStyle.Fill,
             Size = new Size(1000, 600),
-            SplitterDistance = 570,
+            SplitterDistance = 620,
             SplitterWidth = 8,
             BackColor = Border
         };
@@ -390,19 +408,32 @@ public sealed partial class MainForm
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 4,
+            RowCount = 5,
             Padding = new Padding(12)
         };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 130));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 85));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
         var inputHeader = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
         inputHeader.Controls.Add(new Label { Text = "输入格式", AutoSize = true, Margin = new Padding(0, 7, 8, 0) });
         _inputKindBox.DropDownStyle = ComboBoxStyle.DropDownList;
-        _inputKindBox.Width = 150;
-        _inputKindBox.Items.AddRange(["十六进制", "UTF-8 文本", "十进制字节", "Base64"]);
+        _inputKindBox.Width = 190;
+        _inputKindBox.DropDownWidth = 220;
+        _inputKindBox.Items.AddRange([
+            "十六进制",
+            "UTF-8 文本",
+            "ASCII 文本",
+            "UTF-16 LE 文本",
+            "UTF-16 BE 文本",
+            "GB18030 文本",
+            "十进制字节",
+            "二进制位串",
+            "Base64",
+            "URL 百分号编码"
+        ]);
         _inputKindBox.SelectedIndex = 0;
         inputHeader.Controls.Add(_inputKindBox);
         root.Controls.Add(inputHeader, 0, 0);
@@ -422,17 +453,32 @@ public sealed partial class MainForm
         buttons.Controls.Add(_loadImageForConversionButton);
         root.Controls.Add(buttons, 0, 2);
 
-        var outputs = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 8 };
-        for (var i = 0; i < 4; i++)
-        {
-            outputs.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
-            outputs.RowStyles.Add(new RowStyle(SizeType.Percent, 25));
-        }
-        AddOutput(outputs, 0, "十六进制", _hexOutputBox);
-        AddOutput(outputs, 2, "UTF-8", _utf8OutputBox);
-        AddOutput(outputs, 4, "十进制字节", _decimalOutputBox);
-        AddOutput(outputs, 6, "Base64", _base64OutputBox);
-        root.Controls.Add(outputs, 0, 3);
+        var outputTools = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Padding = new Padding(0, 2, 0, 0) };
+        ConfigureCommandButton(_copyOutputButton, "复制当前结果", 112);
+        _outputInfoLabel.Text = "转换后可切换下方结果标签";
+        _outputInfoLabel.AutoSize = true;
+        _outputInfoLabel.ForeColor = Color.FromArgb(90, 90, 90);
+        _outputInfoLabel.Margin = new Padding(8, 7, 0, 0);
+        outputTools.Controls.Add(_copyOutputButton);
+        outputTools.Controls.Add(_outputInfoLabel);
+        root.Controls.Add(outputTools, 0, 3);
+
+        _outputTabs.Dock = DockStyle.Fill;
+        _outputTabs.Padding = new Point(12, 6);
+        _outputTabs.Appearance = TabAppearance.Normal;
+        _outputTabs.Font = new Font("Microsoft YaHei UI", 8.5F);
+        _outputTabs.TabPages.Clear();
+        AddOutputTab("十六进制", _hexOutputBox, wrap: false);
+        AddOutputTab("UTF-8", _utf8OutputBox, wrap: true);
+        AddOutputTab("ASCII", _asciiOutputBox, wrap: true);
+        AddOutputTab("UTF-16 LE", _utf16LeOutputBox, wrap: true);
+        AddOutputTab("UTF-16 BE", _utf16BeOutputBox, wrap: true);
+        AddOutputTab("GB18030", _gb18030OutputBox, wrap: true);
+        AddOutputTab("十进制", _decimalOutputBox, wrap: false);
+        AddOutputTab("二进制", _binaryOutputBox, wrap: false);
+        AddOutputTab("Base64", _base64OutputBox, wrap: true);
+        AddOutputTab("URL 百分号", _urlPercentOutputBox, wrap: false);
+        root.Controls.Add(_outputTabs, 0, 4);
         return root;
     }
 
@@ -530,16 +576,18 @@ public sealed partial class MainForm
         table.Controls.Add(value, 1, row);
     }
 
-    private static void AddOutput(TableLayoutPanel table, int row, string title, TextBox box)
+    private void AddOutputTab(string title, RichTextBox box, bool wrap)
     {
-        table.Controls.Add(new Label { Text = title, AutoSize = true, ForeColor = Color.FromArgb(75, 75, 75), Margin = new Padding(0, 4, 0, 0) }, 0, row);
-        box.Multiline = true;
+        var page = new TabPage(title) { BackColor = Color.White, Padding = new Padding(6) };
         box.ReadOnly = true;
         box.Dock = DockStyle.Fill;
-        box.ScrollBars = ScrollBars.Vertical;
+        box.ScrollBars = wrap ? RichTextBoxScrollBars.Vertical : RichTextBoxScrollBars.Both;
+        box.WordWrap = wrap;
+        box.DetectUrls = false;
         box.BackColor = Color.White;
-        box.Font = new Font("Consolas", 9F);
-        table.Controls.Add(box, 0, row + 1);
+        box.Font = new Font(wrap ? "Microsoft YaHei UI" : "Consolas", 10F);
+        page.Controls.Add(box);
+        _outputTabs.TabPages.Add(page);
     }
 
     private static void ConfigureCommandButton(Button button, string text, int width, bool primary = false)

@@ -2,7 +2,7 @@
   "version": 4,
   "targets": {
     "net10.0-windows": {
-      "Ntag5Studio/1.0.1": {
+      "Ntag5Studio/1.1.0": {
         "type": "project",
         "framework": ".NETCoreApp,Version=v10.0",
         "compile": {
@@ -18,7 +18,7 @@
     }
   },
   "libraries": {
-    "Ntag5Studio/1.0.1": {
+    "Ntag5Studio/1.1.0": {
       "type": "project",
       "path": "../Ntag5Studio/Ntag5Studio.csproj",
       "msbuildProject": "../Ntag5Studio/Ntag5Studio.csproj"
@@ -26,7 +26,7 @@
   },
   "projectFileDependencyGroups": {
     "net10.0-windows": [
-      "Ntag5Studio >= 1.0.1"
+      "Ntag5Studio >= 1.1.0"
     ]
   },
   "packageFolders": {

@@ -6,6 +6,7 @@ public static class Ntag5Memory
 {
     public const int FirstUserBlock = 0x0000;
     public const int LastI2cUserBlock = 0x01FE;
+    public const int LastSramMirrorBlock = 0x003F;
     public const int UserBlockCount = LastI2cUserBlock + 1;
     public const int BytesPerBlock = 4;
     public const int UserByteCount = UserBlockCount * BytesPerBlock;
