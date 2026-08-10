@@ -19,6 +19,21 @@ public sealed partial class MainForm : Form
     private string _imageSource = "尚未载入";
     private Ntag5RuntimeStatus? _runtimeStatus;
 
+    private sealed record PreparedChipWrite(
+        byte[] Target,
+        string ConfirmationIntro,
+        string NoChangeLog,
+        string NoChangeStatus,
+        string SuccessSource);
+
+    private sealed record DirectWritePayload(
+        byte[] Bytes,
+        DataEncodingKind Kind,
+        string KindDisplay,
+        int Offset,
+        int FirstBlock,
+        int LastBlock);
+
     public MainForm()
     {
         InitializeLayout();
@@ -35,6 +50,7 @@ public sealed partial class MainForm : Form
         _runtimeStatusButton.Click += async (_, _) => await RefreshRuntimeStatusAsync(showDetails: true);
         _openButton.Click += (_, _) => OpenBackup();
         _saveButton.Click += (_, _) => SaveBackup();
+        _saveMfdButton.Click += (_, _) => SaveMfdDump();
         _writeButton.Click += async (_, _) => await WriteChangesAsync();
         _verifyButton.Click += async (_, _) => await VerifyAsync();
         _cancelButton.Click += (_, _) => _operationCts?.Cancel();
@@ -62,6 +78,8 @@ public sealed partial class MainForm : Form
         _outputTabs.SelectedIndexChanged += (_, _) => UpdateOutputInfo();
         _parseNdefButton.Click += (_, _) => ParseCurrentNdef();
         _insertBytesButton.Click += (_, _) => InsertConvertedBytes();
+        _directPreviewButton.Click += (_, _) => PreviewDirectWritePayload();
+        _directWriteButton.Click += async (_, _) => await WriteDirectContentAsync();
 
         FormClosing += OnFormClosing;
         KeyPreview = true;
@@ -190,10 +208,10 @@ public sealed partial class MainForm : Form
         {
             using var dialog = new OpenFileDialog
             {
-                Filter = "NTAG5 原始备份 (*.bin)|*.bin|所有文件 (*.*)|*.*",
+                Filter = "NTAG5 原始备份 / Dump (*.bin;*.mfd)|*.bin;*.mfd|NTAG5 原始备份 (*.bin)|*.bin|PCR532/libnfc Dump (*.mfd)|*.mfd|所有文件 (*.*)|*.*",
                 CheckFileExists = true,
                 Multiselect = false,
-                Title = "打开 2044 字节 NTAG5 用户区备份"
+                Title = "打开 2044 字节 NTAG5 用户区备份或 MFD dump"
             };
             if (dialog.ShowDialog(this) != DialogResult.OK)
             {
@@ -216,7 +234,7 @@ public sealed partial class MainForm : Form
             var data = GetWorkingSnapshot();
             using var dialog = new SaveFileDialog
             {
-                Filter = "NTAG5 原始备份 (*.bin)|*.bin|所有文件 (*.*)|*.*",
+                Filter = "NTAG5 原始备份 (*.bin)|*.bin|PCR532/libnfc Dump (*.mfd)|*.mfd|所有文件 (*.*)|*.*",
                 AddExtension = true,
                 DefaultExt = "bin",
                 FileName = $"NTA5332-user-{DateTime.Now:yyyyMMdd-HHmmss}.bin",
@@ -227,34 +245,82 @@ public sealed partial class MainForm : Form
                 return;
             }
 
-            BackupService.Save(dialog.FileName, data, _imageSource);
+            var isMfd = Path.GetExtension(dialog.FileName).Equals(".mfd", StringComparison.OrdinalIgnoreCase);
+            if (isMfd)
+            {
+                BackupService.SaveMfdDump(dialog.FileName, data, _imageSource);
+            }
+            else
+            {
+                BackupService.Save(dialog.FileName, data, _imageSource);
+            }
+
             AppendLog($"备份已保存：{dialog.FileName}");
             AppendLog($"元数据已保存：{dialog.FileName}.json");
             SetStatus("备份与校验元数据保存完成");
         });
     }
 
+    private void SaveMfdDump()
+    {
+        TryUserAction("导出 MFD", () =>
+        {
+            var data = GetWorkingSnapshot();
+            using var dialog = new SaveFileDialog
+            {
+                Filter = "PCR532/libnfc Dump (*.mfd)|*.mfd|所有文件 (*.*)|*.*",
+                AddExtension = true,
+                DefaultExt = "mfd",
+                FileName = $"NTA5332-user-{DateTime.Now:yyyyMMdd-HHmmss}.mfd",
+                Title = "导出 PCR532/libnfc 兼容 MFD dump"
+            };
+            if (dialog.ShowDialog(this) != DialogResult.OK)
+            {
+                return;
+            }
+
+            BackupService.SaveMfdDump(dialog.FileName, data, _imageSource);
+            AppendLog($"MFD 原始 dump 已保存：{dialog.FileName}");
+            AppendLog("MFD 文件内容为 2044 字节线性用户区镜像，不包含自定义文件头。");
+            AppendLog($"元数据已保存：{dialog.FileName}.json");
+            SetStatus("MFD dump 与校验元数据保存完成");
+        });
+    }
+
     private async Task WriteChangesAsync()
     {
         var target = GetWorkingSnapshot();
+        await ExecuteChipWriteAsync(
+            "写入前正在读取当前芯片...",
+            _ => new PreparedChipWrite(
+                target,
+                "目标来源：当前编辑区。",
+                "写入检查：芯片与编辑区完全一致，无需写入。",
+                "无需写入：芯片内容与编辑区一致",
+                $"芯片写入 {DateTime.Now:yyyy-MM-dd HH:mm:ss}"));
+    }
+
+    private async Task ExecuteChipWriteAsync(string initialStatus, Func<byte[], PreparedChipWrite> prepareWrite)
+    {
         _baselineImage = null;
         RefreshDifferenceDisplay();
 
-        await RunOperationAsync("写入前正在读取当前芯片...", async cancellationToken =>
+        await RunOperationAsync(initialStatus, async cancellationToken =>
         {
             var runtimeStatus = await ReadAndApplyRuntimeStatusAsync(cancellationToken, logResult: true);
             var readProgress = new Progress<int>(value => _progressBar.Value = value / 5);
             var current = await Task.Run(
                 () => _device.ReadUserMemory(readProgress, cancellationToken),
                 cancellationToken);
-            var changedBlocks = Ntag5Memory.GetChangedBlocks(current, target);
+            var prepared = prepareWrite(current);
+            Ntag5Memory.ValidateImage(prepared.Target);
+            var changedBlocks = Ntag5Memory.GetChangedBlocks(current, prepared.Target);
 
             if (changedBlocks.Count == 0)
             {
-                _baselineImage = (byte[])current.Clone();
-                RefreshDifferenceDisplay();
-                AppendLog("写入检查：芯片与编辑区完全一致，无需写入。");
-                SetStatus("无需写入：芯片内容与编辑区一致");
+                ApplyChipImage(prepared.Target, prepared.SuccessSource);
+                AppendLog(prepared.NoChangeLog);
+                SetStatus(prepared.NoChangeStatus);
                 return;
             }
 
@@ -267,6 +333,7 @@ public sealed partial class MainForm : Form
                 : string.Empty;
             var confirmation = MessageBox.Show(
                 this,
+                $"{prepared.ConfirmationIntro}\r\n\r\n" +
                 $"将写入 {changedBlocks.Count} 个变化块（0x{firstBlock:X3} 至 0x{lastBlock:X3} 范围内）。\r\n\r\n" +
                 "程序会先把当前芯片完整备份到“文档\\Ntag5Studio\\Backups”，然后逐块写入并回读校验。" +
                 mappingWarning + "\r\n\r\n继续写入吗？",
@@ -290,7 +357,7 @@ public sealed partial class MainForm : Form
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var block = changedBlocks[index];
-                var blockData = target.AsSpan(
+                var blockData = prepared.Target.AsSpan(
                     block * Ntag5Memory.BytesPerBlock,
                     Ntag5Memory.BytesPerBlock).ToArray();
 
@@ -312,8 +379,7 @@ public sealed partial class MainForm : Form
                 AppendLog($"已写入并校验块 0x{block:X3}：{HexCodec.ToSpacedHex(blockData)}");
             }
 
-            _baselineImage = (byte[])target.Clone();
-            RefreshDifferenceDisplay();
+            ApplyChipImage(prepared.Target, prepared.SuccessSource);
             AppendLog($"写入完成：{changedBlocks.Count} 个块全部回读一致。");
             SetStatus($"写入完成并通过校验：{changedBlocks.Count} 个变化块");
         });
@@ -393,6 +459,18 @@ public sealed partial class MainForm : Form
     {
         Ntag5Memory.ValidateImage(image);
         _workingImage = (byte[])image.Clone();
+        _imageSource = source;
+        PopulateGrid();
+        RefreshDifferenceDisplay();
+        UpdateSelectedBlockDetails();
+        UpdateActionAvailability();
+    }
+
+    private void ApplyChipImage(byte[] image, string source)
+    {
+        Ntag5Memory.ValidateImage(image);
+        _workingImage = (byte[])image.Clone();
+        _baselineImage = (byte[])image.Clone();
         _imageSource = source;
         PopulateGrid();
         RefreshDifferenceDisplay();
@@ -667,6 +745,100 @@ public sealed partial class MainForm : Form
         });
     }
 
+    private void PreviewDirectWritePayload()
+    {
+        TryUserAction("直接写入预览", () =>
+        {
+            var payload = BuildDirectWritePayload();
+            _directPreviewBox.Text = BuildDirectWritePreview(payload);
+            _directWriteInfoLabel.Text =
+                $"{payload.Bytes.Length} 字节，偏移 0x{payload.Offset:X4}，影响块 0x{payload.FirstBlock:X3}-0x{payload.LastBlock:X3}";
+            SetStatus("直接写入预览已生成");
+        });
+    }
+
+    private async Task WriteDirectContentAsync()
+    {
+        DirectWritePayload payload;
+        try
+        {
+            payload = BuildDirectWritePayload();
+            _directPreviewBox.Text = BuildDirectWritePreview(payload);
+            _directWriteInfoLabel.Text =
+                $"{payload.Bytes.Length} 字节，偏移 0x{payload.Offset:X4}，影响块 0x{payload.FirstBlock:X3}-0x{payload.LastBlock:X3}";
+        }
+        catch (Exception exception)
+        {
+            AppendLog($"直接写入准备失败：{exception.Message}");
+            MessageBox.Show(this, exception.Message, "直接写入准备失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
+        await ExecuteChipWriteAsync(
+            "直接写入前正在读取当前 TAG...",
+            current =>
+            {
+                var target = (byte[])current.Clone();
+                Buffer.BlockCopy(payload.Bytes, 0, target, payload.Offset, payload.Bytes.Length);
+                return new PreparedChipWrite(
+                    target,
+                    $"目标来源：直接输入（{payload.KindDisplay}）。\r\n" +
+                    $"将把 {payload.Bytes.Length} 字节覆盖到偏移 0x{payload.Offset:X4}，影响块 0x{payload.FirstBlock:X3}-0x{payload.LastBlock:X3}。\r\n" +
+                    "其它用户区字节会以刚刚读取到的当前 TAG 内容保留。",
+                    "直接写入检查：输入内容已与当前 TAG 一致，无需写入。",
+                    "无需写入：直接输入内容与当前 TAG 一致",
+                    $"直接写入 {payload.Bytes.Length} 字节 {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+            });
+    }
+
+    private DirectWritePayload BuildDirectWritePayload()
+    {
+        var kind = (DataEncodingKind)_directInputKindBox.SelectedIndex;
+        var bytes = HexCodec.Parse(_directInputBox.Text, kind);
+        if (bytes.Length == 0)
+        {
+            throw new InvalidOperationException("请输入要写入 TAG 的内容。");
+        }
+
+        var address = ParseHexNumber(_directAddressBox.Text, _directAddressModeBox.SelectedIndex == 1 ? "块地址" : "偏移");
+        var offset = _directAddressModeBox.SelectedIndex == 1
+            ? checked(address * Ntag5Memory.BytesPerBlock)
+            : address;
+
+        if (offset < 0 || offset + bytes.Length > Ntag5Memory.UserByteCount)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(offset),
+                $"写入范围必须位于 0x0000-0x{Ntag5Memory.UserByteCount - 1:X4}。当前内容为 {bytes.Length} 字节，起始偏移为 0x{offset:X4}。");
+        }
+
+        var firstBlock = offset / Ntag5Memory.BytesPerBlock;
+        var lastBlock = (offset + bytes.Length - 1) / Ntag5Memory.BytesPerBlock;
+        var kindDisplay = _directInputKindBox.SelectedItem?.ToString() ?? kind.ToString();
+        return new DirectWritePayload(bytes, kind, kindDisplay, offset, firstBlock, lastBlock);
+    }
+
+    private static string BuildDirectWritePreview(DirectWritePayload payload)
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine($"输入格式：{payload.KindDisplay}");
+        builder.AppendLine($"字节数：{payload.Bytes.Length}");
+        builder.AppendLine($"目标偏移：0x{payload.Offset:X4}");
+        builder.AppendLine($"受影响块：0x{payload.FirstBlock:X3} - 0x{payload.LastBlock:X3}");
+        builder.AppendLine();
+        builder.AppendLine("写入字节（Hex）：");
+        builder.AppendLine(HexCodec.ToSpacedHex(payload.Bytes));
+        builder.AppendLine();
+        builder.AppendLine("UTF-8 预览：");
+        builder.AppendLine(HexCodec.ToUtf8(payload.Bytes));
+        builder.AppendLine();
+        builder.AppendLine("ASCII 预览：");
+        builder.AppendLine(HexCodec.ToAscii(payload.Bytes));
+        builder.AppendLine();
+        builder.AppendLine("说明：写入时会先读取当前 TAG，保留目标范围以外的所有用户区字节。");
+        return builder.ToString();
+    }
+
     private void ParseCurrentNdef()
     {
         TryUserAction("Type 5 / NDEF 解析", () =>
@@ -687,8 +859,11 @@ public sealed partial class MainForm : Form
         _runtimeStatusButton.Enabled = !_busy && connected;
         _openButton.Enabled = !_busy;
         _saveButton.Enabled = !_busy && _workingImage is not null;
+        _saveMfdButton.Enabled = !_busy && _workingImage is not null;
         _writeButton.Enabled = !_busy && connected && _workingImage is not null;
         _verifyButton.Enabled = !_busy && connected && _workingImage is not null;
+        _directPreviewButton.Enabled = !_busy;
+        _directWriteButton.Enabled = !_busy && connected;
         _cancelButton.Enabled = _busy;
         _memoryGrid.ReadOnly = _busy || _workingImage is null;
         _connectionStateLabel.Text = connected ? "已连接" : "未连接";

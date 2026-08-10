@@ -1,12 +1,13 @@
 {
   "runtimeTarget": {
-    "name": ".NETCoreApp,Version=v10.0",
+    "name": ".NETCoreApp,Version=v10.0/win-x64",
     "signature": ""
   },
   "compilationOptions": {},
   "targets": {
-    ".NETCoreApp,Version=v10.0": {
-      "Ntag5Studio/1.1.0": {
+    ".NETCoreApp,Version=v10.0": {},
+    ".NETCoreApp,Version=v10.0/win-x64": {
+      "Ntag5Studio/1.2.0": {
         "runtime": {
           "Ntag5Studio.dll": {}
         }
@@ -14,7 +15,7 @@
     }
   },
   "libraries": {
-    "Ntag5Studio/1.1.0": {
+    "Ntag5Studio/1.2.0": {
       "type": "project",
       "serviceable": false,
       "sha512": ""

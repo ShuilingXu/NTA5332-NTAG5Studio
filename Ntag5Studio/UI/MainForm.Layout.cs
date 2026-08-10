@@ -19,6 +19,7 @@ public sealed partial class MainForm
     private readonly Button _runtimeStatusButton = new();
     private readonly Button _openButton = new();
     private readonly Button _saveButton = new();
+    private readonly Button _saveMfdButton = new();
     private readonly Button _writeButton = new();
     private readonly Button _verifyButton = new();
     private readonly Button _cancelButton = new();
@@ -52,6 +53,14 @@ public sealed partial class MainForm
     private readonly RichTextBox _ndefOutputBox = new();
     private readonly TextBox _insertOffsetBox = new();
     private readonly Button _insertBytesButton = new();
+    private readonly ComboBox _directInputKindBox = new();
+    private readonly ComboBox _directAddressModeBox = new();
+    private readonly TextBox _directAddressBox = new();
+    private readonly TextBox _directInputBox = new();
+    private readonly Button _directPreviewButton = new();
+    private readonly Button _directWriteButton = new();
+    private readonly Label _directWriteInfoLabel = new();
+    private readonly RichTextBox _directPreviewBox = new();
     private readonly RichTextBox _logBox = new();
     private readonly ToolStripStatusLabel _statusLabel = new();
     private readonly ToolTip _toolTip = new();
@@ -193,17 +202,18 @@ public sealed partial class MainForm
             BorderStyle = BorderStyle.FixedSingle
         };
 
-        ConfigureCommandButton(_readButton, "读取芯片", 96);
-        ConfigureCommandButton(_runtimeStatusButton, "运行状态", 96);
-        ConfigureCommandButton(_openButton, "打开备份", 96);
-        ConfigureCommandButton(_saveButton, "保存备份", 96);
-        ConfigureCommandButton(_writeButton, "写入变化", 96, primary: true);
-        ConfigureCommandButton(_verifyButton, "校验", 76);
-        ConfigureCommandButton(_cancelButton, "取消", 70);
+        ConfigureCommandButton(_readButton, "读取芯片", 88);
+        ConfigureCommandButton(_runtimeStatusButton, "运行状态", 86);
+        ConfigureCommandButton(_openButton, "打开备份", 88);
+        ConfigureCommandButton(_saveButton, "保存备份", 88);
+        ConfigureCommandButton(_saveMfdButton, "导出MFD", 86);
+        ConfigureCommandButton(_writeButton, "写入变化", 90, primary: true);
+        ConfigureCommandButton(_verifyButton, "校验", 64);
+        ConfigureCommandButton(_cancelButton, "取消", 64);
         _cancelButton.Enabled = false;
 
-        bar.Controls.AddRange([_readButton, _runtimeStatusButton, _openButton, _saveButton, _writeButton, _verifyButton]);
-        _progressBar.Size = new Size(180, 22);
+        bar.Controls.AddRange([_readButton, _runtimeStatusButton, _openButton, _saveButton, _saveMfdButton, _writeButton, _verifyButton]);
+        _progressBar.Size = new Size(160, 22);
         _progressBar.Margin = new Padding(14, 3, 8, 0);
         _progressBar.Style = ProgressBarStyle.Continuous;
         bar.Controls.Add(_progressBar);
@@ -221,6 +231,7 @@ public sealed partial class MainForm
         };
         tabs.TabPages.Add(BuildMemoryTab());
         tabs.TabPages.Add(BuildConversionTab());
+        tabs.TabPages.Add(BuildDirectWriteTab());
         tabs.TabPages.Add(BuildLogTab());
         return tabs;
     }
@@ -517,6 +528,137 @@ public sealed partial class MainForm
         insert.Controls.Add(_insertOffsetBox);
         insert.Controls.Add(_insertBytesButton);
         root.Controls.Add(insert, 0, 2);
+        return root;
+    }
+
+    private TabPage BuildDirectWriteTab()
+    {
+        var page = new TabPage("直接写入") { BackColor = WindowBackground, Padding = new Padding(10) };
+        var split = new SplitContainer
+        {
+            Dock = DockStyle.Fill,
+            Size = new Size(1000, 600),
+            SplitterDistance = 620,
+            SplitterWidth = 8,
+            BackColor = Border
+        };
+        split.Panel1.BackColor = Color.White;
+        split.Panel2.BackColor = Color.White;
+        split.Panel1.Controls.Add(BuildDirectWriteInputPanel());
+        split.Panel2.Controls.Add(BuildDirectWritePreviewPanel());
+        page.Controls.Add(split);
+        return page;
+    }
+
+    private Control BuildDirectWriteInputPanel()
+    {
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 5,
+            Padding = new Padding(12)
+        };
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
+
+        var header = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
+        header.Controls.Add(new Label { Text = "输入格式", AutoSize = true, Margin = new Padding(0, 7, 8, 0) });
+        _directInputKindBox.DropDownStyle = ComboBoxStyle.DropDownList;
+        _directInputKindBox.Width = 170;
+        _directInputKindBox.DropDownWidth = 220;
+        _directInputKindBox.Items.AddRange([
+            "十六进制",
+            "UTF-8 文本",
+            "ASCII 文本",
+            "UTF-16 LE 文本",
+            "UTF-16 BE 文本",
+            "GB18030 文本",
+            "十进制字节",
+            "二进制位串",
+            "Base64",
+            "URL 百分号编码"
+        ]);
+        _directInputKindBox.SelectedIndex = 1;
+        header.Controls.Add(_directInputKindBox);
+
+        header.Controls.Add(new Label { Text = "地址类型", AutoSize = true, Margin = new Padding(12, 7, 8, 0) });
+        _directAddressModeBox.DropDownStyle = ComboBoxStyle.DropDownList;
+        _directAddressModeBox.Width = 130;
+        _directAddressModeBox.Items.AddRange(["偏移 Hex", "块地址 Hex"]);
+        _directAddressModeBox.SelectedIndex = 0;
+        header.Controls.Add(_directAddressModeBox);
+
+        header.Controls.Add(new Label { Text = "位置", AutoSize = true, Margin = new Padding(12, 7, 8, 0) });
+        _directAddressBox.Text = "0000";
+        _directAddressBox.Width = 80;
+        _directAddressBox.Font = new Font("Consolas", 9.5F);
+        _directAddressBox.Margin = new Padding(0, 3, 0, 0);
+        header.Controls.Add(_directAddressBox);
+        root.Controls.Add(header, 0, 0);
+
+        _directInputBox.Multiline = true;
+        _directInputBox.Dock = DockStyle.Fill;
+        _directInputBox.ScrollBars = ScrollBars.Both;
+        _directInputBox.AcceptsReturn = true;
+        _directInputBox.AcceptsTab = true;
+        _directInputBox.Font = new Font("Consolas", 10F);
+        _directInputBox.PlaceholderText = "直接输入字符串、十六进制字节、Base64 等内容。写入时会先读取当前 TAG，只覆盖目标范围。";
+        root.Controls.Add(_directInputBox, 0, 1);
+
+        var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Padding = new Padding(0, 8, 0, 4) };
+        ConfigureCommandButton(_directPreviewButton, "生成预览", 92);
+        ConfigureCommandButton(_directWriteButton, "直接写入 TAG", 124, primary: true);
+        buttons.Controls.Add(_directPreviewButton);
+        buttons.Controls.Add(_directWriteButton);
+        root.Controls.Add(buttons, 0, 2);
+
+        _directWriteInfoLabel.Text = "默认 UTF-8 文本；偏移/块地址均按十六进制输入。";
+        _directWriteInfoLabel.AutoSize = true;
+        _directWriteInfoLabel.ForeColor = Color.FromArgb(90, 90, 90);
+        _directWriteInfoLabel.Margin = new Padding(0, 5, 0, 0);
+        root.Controls.Add(_directWriteInfoLabel, 0, 3);
+
+        var note = new Label
+        {
+            Dock = DockStyle.Fill,
+            ForeColor = Color.FromArgb(85, 85, 85),
+            Text = "兼容 PCR532/libnfc 的原始 dump 思路：按 TAG 用户区线性地址写入。程序仍会自动备份、只写受影响的 4 字节块，并逐块回读校验。",
+            Padding = new Padding(0, 8, 0, 0)
+        };
+        root.Controls.Add(note, 0, 4);
+        return root;
+    }
+
+    private Control BuildDirectWritePreviewPanel()
+    {
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            Padding = new Padding(12)
+        };
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.Controls.Add(new Label
+        {
+            Text = "写入预览",
+            Dock = DockStyle.Fill,
+            Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold),
+            ForeColor = Color.FromArgb(55, 65, 70)
+        }, 0, 0);
+
+        _directPreviewBox.Dock = DockStyle.Fill;
+        _directPreviewBox.ReadOnly = true;
+        _directPreviewBox.BorderStyle = BorderStyle.FixedSingle;
+        _directPreviewBox.BackColor = Color.White;
+        _directPreviewBox.Font = new Font("Consolas", 9.5F);
+        _directPreviewBox.Text = "输入内容后点击“生成预览”。";
+        root.Controls.Add(_directPreviewBox, 0, 1);
         return root;
     }
 

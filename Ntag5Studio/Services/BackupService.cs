@@ -5,6 +5,9 @@ namespace Ntag5Studio.Services;
 
 public static class BackupService
 {
+    public const string RawDumpDescription =
+        "Raw bytes in I2C user-block order; no file header, trailer or container metadata.";
+
     public static byte[] Load(string path)
     {
         var bytes = File.ReadAllBytes(path);
@@ -14,16 +17,28 @@ public static class BackupService
 
     public static string Save(string path, byte[] data, string source)
     {
+        return SaveRawImage(path, data, source, "ntag5-user-memory-backup/v1", "NTAG5 raw .bin backup");
+    }
+
+    public static string SaveMfdDump(string path, byte[] data, string source)
+    {
+        return SaveRawImage(path, data, source, "ntag5-user-memory-mfd-dump/v1", "PCR532/libnfc-style raw .mfd dump");
+    }
+
+    private static string SaveRawImage(string path, byte[] data, string source, string schema, string format)
+    {
         Ntag5Memory.ValidateImage(data);
         File.WriteAllBytes(path, data);
 
         var metadata = new BackupMetadata(
-            Schema: "ntag5-user-memory-backup/v1",
+            Schema: schema,
             Device: "NXP NTA5332 / NTAG 5 boost",
             Region: "I2C user EEPROM blocks 0x0000-0x01FE",
             BlockSize: Ntag5Memory.BytesPerBlock,
             BlockCount: Ntag5Memory.UserBlockCount,
             ByteCount: Ntag5Memory.UserByteCount,
+            Format: format,
+            Layout: RawDumpDescription,
             CreatedLocal: DateTimeOffset.Now,
             Sha256: Ntag5Memory.Sha256(data),
             Source: source);
@@ -51,6 +66,8 @@ public static class BackupService
         int BlockSize,
         int BlockCount,
         int ByteCount,
+        string Format,
+        string Layout,
         DateTimeOffset CreatedLocal,
         string Sha256,
         string Source);

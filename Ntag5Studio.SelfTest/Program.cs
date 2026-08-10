@@ -20,6 +20,7 @@ var tests = new (string Name, Action Run)[]
     ("变化块检测", TestChangedBlocks),
     ("Type 5 / NDEF URI 解析", TestNdef),
     ("备份及元数据", TestBackup),
+    ("MFD 原始 dump", TestMfdDump),
     ("运行状态解析", TestRuntimeStatus),
     ("供应商设备路径", TestDevicePath),
     ("供应商驱动控制码", TestVendorIoctls)
@@ -122,6 +123,29 @@ static void TestBackup()
     }
 }
 
+static void TestMfdDump()
+{
+    var image = Enumerable.Range(0, Ntag5Memory.UserByteCount).Select(value => (byte)(255 - value)).ToArray();
+    var path = Path.Combine(Environment.CurrentDirectory, "Ntag5Studio.SelfTest.tmp.mfd");
+    var metadataPath = path + ".json";
+    try
+    {
+        BackupService.SaveMfdDump(path, image, "self-test mfd");
+        var dump = File.ReadAllBytes(path);
+        Assert(dump.Length == Ntag5Memory.UserByteCount, "mfd length");
+        Assert(dump.SequenceEqual(image), "mfd raw image");
+        Assert(BackupService.Load(path).SequenceEqual(image), "mfd round trip");
+        var metadata = File.ReadAllText(metadataPath);
+        Assert(metadata.Contains("raw .mfd dump", StringComparison.Ordinal), "mfd metadata format");
+        Assert(metadata.Contains(BackupService.RawDumpDescription, StringComparison.Ordinal), "mfd metadata layout");
+    }
+    finally
+    {
+        File.Delete(path);
+        File.Delete(metadataPath);
+    }
+}
+
 static void TestDevicePath()
 {
     Assert(SpbNtag5Device.DefaultDevicePath == @"\\.\SPBNFC01", "device path");
@@ -185,6 +209,10 @@ static void RenderPreviews(string outputDirectory)
     Application.DoEvents();
     SaveControl(form, Path.Combine(outputDirectory, "Ntag5Studio-converter-1180x800.png"));
 
+    tabs.SelectedIndex = 2;
+    Application.DoEvents();
+    SaveControl(form, Path.Combine(outputDirectory, "Ntag5Studio-direct-write-1180x800.png"));
+
     form.Size = new Size(940, 650);
     tabs.SelectedIndex = 0;
     Application.DoEvents();
@@ -193,8 +221,12 @@ static void RenderPreviews(string outputDirectory)
     tabs.SelectedIndex = 1;
     Application.DoEvents();
     SaveControl(form, Path.Combine(outputDirectory, "Ntag5Studio-converter-940x650.png"));
+
+    tabs.SelectedIndex = 2;
+    Application.DoEvents();
+    SaveControl(form, Path.Combine(outputDirectory, "Ntag5Studio-direct-write-940x650.png"));
     form.Close();
-    Console.WriteLine("RENDER OK  4 previews");
+    Console.WriteLine("RENDER OK  6 previews");
 }
 
 static T? FindControl<T>(Control parent) where T : Control
