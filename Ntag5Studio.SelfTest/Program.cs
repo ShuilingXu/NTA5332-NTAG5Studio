@@ -22,6 +22,7 @@ var tests = new (string Name, Action Run)[]
     ("备份及元数据", TestBackup),
     ("MFD 原始 dump", TestMfdDump),
     ("S50 文件识别", TestMifareClassicDump),
+    ("PCR532 配置与识别", TestPcr532Service),
     ("运行状态解析", TestRuntimeStatus),
     ("供应商设备路径", TestDevicePath),
     ("供应商驱动控制码", TestVendorIoctls)
@@ -179,6 +180,20 @@ static void TestMifareClassicDump()
     }
 }
 
+static void TestPcr532Service()
+{
+    var config = Pcr532Service.BuildConfiguration("com7", 115200);
+    Assert(config.Contains("pn532_uart:COM7:115200", StringComparison.Ordinal), "PCR532 connstring");
+    Assert(config.Contains("allow_intrusive_scan = false", StringComparison.Ordinal), "PCR532 safe scan");
+    Assert(Pcr532Service.NormalizeUid("11 22-33:44") == "11223344", "UID normalization");
+
+    var card = Pcr532Service.ParseCardInfo(
+        "NFC device: pn532_uart\r\nUID (NFCID1): 11 22 33 44\r\nATQA (SENS_RES): 00 04\r\nSAK (SEL_RES): 08");
+    Assert(card.CardType.Contains("S50", StringComparison.Ordinal), "S50 card detection");
+    Assert(card.Uid == "11223344", "card UID parse");
+    Assert(card.Sak == "08", "card SAK parse");
+}
+
 static void TestDevicePath()
 {
     Assert(SpbNtag5Device.DefaultDevicePath == @"\\.\SPBNFC01", "device path");
@@ -240,11 +255,15 @@ static void RenderPreviews(string outputDirectory)
 
     tabs.SelectedIndex = 1;
     Application.DoEvents();
-    SaveControl(form, Path.Combine(outputDirectory, "Ntag5Studio-converter-1180x800.png"));
+    SaveControl(form, Path.Combine(outputDirectory, "Ntag5Studio-pcr532-1180x800.png"));
 
     tabs.SelectedIndex = 2;
     Application.DoEvents();
     SaveControl(form, Path.Combine(outputDirectory, "Ntag5Studio-direct-write-1180x800.png"));
+
+    tabs.SelectedIndex = 3;
+    Application.DoEvents();
+    SaveControl(form, Path.Combine(outputDirectory, "Ntag5Studio-converter-1180x800.png"));
 
     form.Size = new Size(940, 650);
     tabs.SelectedIndex = 0;
@@ -253,13 +272,17 @@ static void RenderPreviews(string outputDirectory)
 
     tabs.SelectedIndex = 1;
     Application.DoEvents();
-    SaveControl(form, Path.Combine(outputDirectory, "Ntag5Studio-converter-940x650.png"));
+    SaveControl(form, Path.Combine(outputDirectory, "Ntag5Studio-pcr532-940x650.png"));
 
     tabs.SelectedIndex = 2;
     Application.DoEvents();
     SaveControl(form, Path.Combine(outputDirectory, "Ntag5Studio-direct-write-940x650.png"));
+
+    tabs.SelectedIndex = 3;
+    Application.DoEvents();
+    SaveControl(form, Path.Combine(outputDirectory, "Ntag5Studio-converter-940x650.png"));
     form.Close();
-    Console.WriteLine("RENDER OK  6 previews");
+    Console.WriteLine("RENDER OK  8 previews");
 }
 
 static T? FindControl<T>(Control parent) where T : Control

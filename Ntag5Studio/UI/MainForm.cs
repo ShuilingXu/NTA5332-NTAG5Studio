@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using Ntag5Studio.Core;
@@ -10,6 +11,7 @@ namespace Ntag5Studio.UI;
 public sealed partial class MainForm : Form
 {
     private readonly SpbNtag5Device _device = new();
+    private readonly Pcr532Service _pcr532 = new();
     private byte[]? _workingImage;
     private byte[]? _baselineImage;
     private byte[]? _convertedBytes;
@@ -42,6 +44,7 @@ public sealed partial class MainForm : Form
     {
         InitializeLayout();
         WireEvents();
+        RefreshPcrPorts();
         UpdateActionAvailability();
         AppendLog("程序已启动。连接后会读取 CONFIG_1_REG，判断 EEPROM / SRAM 运行状态。");
         AppendLog($"默认驱动路径：{SpbNtag5Device.DefaultDevicePath}");
@@ -84,6 +87,19 @@ public sealed partial class MainForm : Form
         _insertBytesButton.Click += (_, _) => InsertConvertedBytes();
         _directPreviewButton.Click += (_, _) => PreviewDirectWritePayload();
         _directWriteButton.Click += async (_, _) => await WriteDirectContentAsync();
+        _pcrRefreshPortsButton.Click += (_, _) => RefreshPcrPorts();
+        _pcrDetectButton.Click += async (_, _) => await DetectPcr532Async();
+        _pcrInstallDriverButton.Click += (_, _) => InstallPcr532Driver();
+        _pcrBrowseKeyButton.Click += (_, _) => SelectPcrKeyFile();
+        _pcrRecoveryReadButton.Click += async (_, _) => await ReadClassicWithRecoveryAsync();
+        _pcrKnownReadButton.Click += async (_, _) => await ReadClassicWithKnownKeysAsync();
+        _pcrWriteButton.Click += async (_, _) => await WriteClassicAsync(includeManufacturerBlock: false);
+        _pcrMagicWriteButton.Click += async (_, _) => await WriteClassicAsync(includeManufacturerBlock: true);
+        _pcrSetUidButton.Click += async (_, _) => await SetPcrUidAsync();
+        _pcrFormatUidButton.Click += async (_, _) => await FormatPcrUidCardAsync();
+        _pcrLockUfuidButton.Click += async (_, _) => await LockPcrUfuidAsync();
+        _pcrType2ReadButton.Click += async (_, _) => await ReadPcrType2Async();
+        _pcrType2WriteButton.Click += async (_, _) => await WritePcrType2Async();
 
         FormClosing += OnFormClosing;
         KeyPreview = true;
@@ -120,6 +136,558 @@ public sealed partial class MainForm : Form
             SetStatus("已连接，可以读取芯片或打开备份");
             await RefreshRuntimeStatusAsync(showDetails: false);
         }
+    }
+
+    private void RefreshPcrPorts()
+    {
+        var previous = _pcrPortBox.Text.Trim();
+        var ports = Pcr532Service.GetSerialPorts();
+        _pcrPortBox.Items.Clear();
+        foreach (var port in ports)
+        {
+            _pcrPortBox.Items.Add(port);
+        }
+
+        if (previous.Length > 0)
+        {
+            _pcrPortBox.Text = previous;
+        }
+        else if (ports.Count > 0)
+        {
+            _pcrPortBox.SelectedIndex = 0;
+        }
+        else
+        {
+            _pcrPortBox.Text = "COM3";
+        }
+
+        if (_pcr532.IsRuntimeAvailable)
+        {
+            _pcrRuntimeLabel.Text = $"组件：就绪 · {Path.GetFileName(_pcr532.RuntimeDirectory)}";
+            _pcrRuntimeLabel.ForeColor = Color.FromArgb(0, 105, 92);
+        }
+        else
+        {
+            _pcrRuntimeLabel.Text = "组件：缺少 PCR532 运行文件";
+            _pcrRuntimeLabel.ForeColor = Color.FromArgb(183, 28, 28);
+        }
+
+        AppendPcrLog($"串口列表刷新：{(ports.Count == 0 ? "未发现串口，仍可手动输入 COM 口" : string.Join(", ", ports))}");
+        UpdateActionAvailability();
+    }
+
+    private async Task DetectPcr532Async()
+    {
+        await RunOperationAsync("正在检测 PCR532 读卡器和卡片...", async cancellationToken =>
+        {
+            ConfigurePcr532();
+            var result = await _pcr532.DetectCardAsync(CreatePcrProgress(), cancellationToken);
+            EnsurePcrSuccess(result, "检测 PCR532");
+            var card = Pcr532Service.ParseCardInfo(result.CombinedOutput);
+            _pcrCardLabel.Text = card.Uid.Length == 0
+                ? $"卡片：未检测到卡片（读卡器已响应）"
+                : $"卡片：{card.CompactDisplay}" +
+                  (card.Sak.Length == 0 ? string.Empty : $" · SAK {card.Sak}");
+            AppendPcrLog($"识别结果：{card.CardType}；UID={(card.Uid.Length == 0 ? "-" : card.Uid)}；ATQA={(card.Atqa.Length == 0 ? "-" : card.Atqa)}；SAK={(card.Sak.Length == 0 ? "-" : card.Sak)}");
+            SetStatus(card.Uid.Length == 0 ? "PCR532 已连接，等待卡片" : $"PCR532 已检测到 {card.CardType}");
+        });
+    }
+
+    private void ConfigurePcr532()
+    {
+        var baud = ParsePcrBaudRate();
+        var configPath = _pcr532.Configure(_pcrPortBox.Text, baud);
+        AppendPcrLog($"libnfc 配置：{configPath} · pn532_uart:{_pcrPortBox.Text.Trim().ToUpperInvariant()}:{baud}");
+    }
+
+    private int ParsePcrBaudRate()
+    {
+        if (!int.TryParse(_pcrBaudBox.SelectedItem?.ToString(), NumberStyles.None, CultureInfo.InvariantCulture, out var baud))
+        {
+            throw new FormatException("PCR532 速度设置无效。 ");
+        }
+
+        return baud;
+    }
+
+    private IProgress<string> CreatePcrProgress() =>
+        new Progress<string>(AppendPcrLog);
+
+    private static void EnsurePcrSuccess(Pcr532CommandResult result, string operation)
+    {
+        if (result.DeviceNotFound)
+        {
+            throw new IOException($"{operation}失败：未找到 PCR532 读卡器或卡片。请检查 CH341 驱动、串口号、波特率和天线连接。 ");
+        }
+
+        if (!result.Success)
+        {
+            var detail = result.CombinedOutput.Trim();
+            if (detail.Length > 800)
+            {
+                detail = detail[^800..];
+            }
+
+            throw new IOException($"{operation}失败（退出码 {result.ExitCode}）。{Environment.NewLine}{detail}");
+        }
+    }
+
+    private void InstallPcr532Driver()
+    {
+        TryUserAction("安装 PCR532 驱动", () =>
+        {
+            var installer = _pcr532.GetDriverInstallerPath();
+            if (installer is null)
+            {
+                throw new FileNotFoundException("发布包中没有 CH341/Cdc 驱动安装程序。 ");
+            }
+
+            var confirmation = MessageBox.Show(
+                this,
+                "即将启动 PCR532 的 CH341/Cdc 驱动安装程序。请在 Windows 安装器中按提示完成，是否继续？",
+                "安装 PCR532 驱动",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Information,
+                MessageBoxDefaultButton.Button2);
+            if (confirmation != DialogResult.Yes)
+            {
+                return;
+            }
+
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = installer,
+                WorkingDirectory = Path.GetDirectoryName(installer),
+                UseShellExecute = true
+            });
+            AppendPcrLog($"已启动驱动安装程序：{installer}");
+            SetStatus("驱动安装程序已启动");
+        });
+    }
+
+    private void SelectPcrKeyFile()
+    {
+        TryUserAction("选择密钥文件", () =>
+        {
+            using var dialog = new OpenFileDialog
+            {
+                Filter = "MIFARE 密钥/备份文件 (*.mfd;*.dump;*.bin)|*.mfd;*.dump;*.bin|所有文件 (*.*)|*.*",
+                CheckFileExists = true,
+                Title = "选择 PCR532 使用的 MIFARE 密钥文件"
+            };
+            if (dialog.ShowDialog(this) != DialogResult.OK)
+            {
+                return;
+            }
+
+            _pcrKeyFileBox.Text = dialog.FileName;
+            AppendPcrLog($"密钥文件：{dialog.FileName}");
+            SetStatus("已选择 PCR532 密钥文件");
+        });
+    }
+
+    private async Task ReadClassicWithRecoveryAsync()
+    {
+        var path = ShowPcrSaveDialog(
+            "保存 MIFARE Classic 自动恢复备份",
+            $"MIFARE-recovered-{DateTime.Now:yyyyMMdd-HHmmss}.dump");
+        if (path is null)
+        {
+            return;
+        }
+
+        await RunOperationAsync("正在使用 mfoc 恢复密钥并备份 MIFARE Classic...", async cancellationToken =>
+        {
+            ConfigurePcr532();
+            var result = await _pcr532.ReadClassicWithRecoveryAsync(path, CreatePcrProgress(), cancellationToken);
+            EnsurePcrSuccess(result, "MIFARE Classic 自动恢复");
+            LoadPcrClassicDump(path, "PCR532 mfoc 自动恢复");
+            AppendLog($"PCR532 自动恢复备份完成：{path}");
+            SetStatus("MIFARE Classic 密钥恢复并备份完成");
+        });
+    }
+
+    private async Task ReadClassicWithKnownKeysAsync()
+    {
+        var path = ShowPcrSaveDialog(
+            "保存 MIFARE Classic 备份",
+            $"MIFARE-{DateTime.Now:yyyyMMdd-HHmmss}.dump");
+        if (path is null)
+        {
+            return;
+        }
+
+        var keyFile = GetPcrKeyFile();
+        await RunOperationAsync("正在使用现有密钥读取 MIFARE Classic...", async cancellationToken =>
+        {
+            ConfigurePcr532();
+            var result = await _pcr532.ReadClassicWithKnownKeysAsync(path, keyFile, CreatePcrProgress(), cancellationToken);
+            EnsurePcrSuccess(result, "MIFARE Classic 读取");
+            LoadPcrClassicDump(path, "PCR532 已知密钥读取");
+            AppendLog($"PCR532 MIFARE 备份完成：{path}");
+            SetStatus("MIFARE Classic 读取完成");
+        });
+    }
+
+    private async Task WriteClassicAsync(bool includeManufacturerBlock)
+    {
+        var path = ShowPcrOpenDialog("选择要写入的 MIFARE Classic 文件");
+        if (path is null)
+        {
+            return;
+        }
+
+        var dump = BackupService.LoadDump(path);
+        if (!dump.IsMifareClassic)
+        {
+            throw new InvalidOperationException($"该文件是 {dump.DisplayName}，不是 MIFARE Classic 原始文件。 ");
+        }
+
+        var keyFile = GetPcrKeyFile();
+        var warning = includeManufacturerBlock
+            ? "这会使用 libnfc 的解锁写入模式，尝试覆盖 0 块 UID/厂商数据；仅适用于支持后门的 UID/CUID/UFUID 魔术卡。普通原厂卡可能损坏或无法再次选择。"
+            : "普通写卡模式不会覆盖 0 块 UID/厂商数据，适用于已有 UID 的普通 MIFARE Classic 卡。";
+        var confirmation = MessageBox.Show(
+            this,
+            $"文件：{path}{Environment.NewLine}容量：{dump.Bytes.Length} 字节{Environment.NewLine}{Environment.NewLine}{warning}{Environment.NewLine}{Environment.NewLine}" +
+            (_pcrAutoBackupCheck.Checked ? "写入前会先尝试读取并保存当前卡片备份。" : "已关闭写入前自动备份。") + "\r\n\r\n继续吗？",
+            includeManufacturerBlock ? "确认写入 UID/CUID 卡" : "确认写入 MIFARE Classic",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2);
+        if (confirmation != DialogResult.Yes)
+        {
+            return;
+        }
+
+        await RunOperationAsync("正在准备写入 MIFARE Classic...", async cancellationToken =>
+        {
+            ConfigurePcr532();
+            if (_pcrAutoBackupCheck.Checked)
+            {
+                await CreatePcrClassicBackupAsync(keyFile, "before-write", cancellationToken);
+            }
+
+            var result = await _pcr532.WriteClassicAsync(
+                path,
+                keyFile,
+                includeManufacturerBlock,
+                CreatePcrProgress(),
+                cancellationToken);
+            EnsurePcrSuccess(result, includeManufacturerBlock ? "UID/CUID 写入" : "MIFARE Classic 写入");
+            AppendLog($"PCR532 MIFARE 写卡完成：{path}");
+            SetStatus(includeManufacturerBlock ? "UID/CUID 卡写入完成" : "MIFARE Classic 写入完成");
+        });
+    }
+
+    private async Task SetPcrUidAsync()
+    {
+        var uid = Pcr532Service.NormalizeUid(_pcrUidBox.Text);
+        var uidBytes = Convert.FromHexString(uid);
+        var bcc = (byte)(uidBytes[0] ^ uidBytes[1] ^ uidBytes[2] ^ uidBytes[3]);
+        var confirmation = MessageBox.Show(
+            this,
+            $"将把 UID/CUID 魔术卡的 UID 设置为 {uid}，BCC 将自动计算为 {bcc:X2}。\r\n\r\n" +
+            "此操作只适用于支持后门的 MIFARE Classic UID 卡，不适用于普通原厂卡。继续吗？",
+            "确认设置 UID",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2);
+        if (confirmation != DialogResult.Yes)
+        {
+            return;
+        }
+
+        var keyFile = GetPcrKeyFile();
+        await RunOperationAsync("正在设置 MIFARE UID...", async cancellationToken =>
+        {
+            ConfigurePcr532();
+            if (_pcrAutoBackupCheck.Checked)
+            {
+                await CreatePcrClassicBackupAsync(keyFile, "before-uid", cancellationToken);
+            }
+
+            var result = await _pcr532.SetUidAsync(uid, CreatePcrProgress(), cancellationToken);
+            EnsurePcrSuccess(result, "设置 UID");
+            AppendLog($"PCR532 UID 已设置：{uid}（BCC {bcc:X2}）");
+            SetStatus($"UID 设置完成：{uid}");
+        });
+    }
+
+    private async Task FormatPcrUidCardAsync()
+    {
+        var confirmation = MessageBox.Show(
+            this,
+            "格式化 UID 卡会清空可写数据并恢复默认访问控制，操作前会先备份当前卡片（如果勾选自动备份）。\r\n\r\n继续吗？",
+            "确认格式化 UID 卡",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2);
+        if (confirmation != DialogResult.Yes)
+        {
+            return;
+        }
+
+        var keyFile = GetPcrKeyFile();
+        await RunOperationAsync("正在格式化 MIFARE UID 卡...", async cancellationToken =>
+        {
+            ConfigurePcr532();
+            if (_pcrAutoBackupCheck.Checked)
+            {
+                await CreatePcrClassicBackupAsync(keyFile, "before-format", cancellationToken);
+            }
+
+            var result = await _pcr532.FormatUidCardAsync(CreatePcrProgress(), cancellationToken);
+            EnsurePcrSuccess(result, "格式化 UID 卡");
+            AppendLog("PCR532 UID 卡格式化完成。");
+            SetStatus("UID 卡格式化完成");
+        });
+    }
+
+    private async Task LockPcrUfuidAsync()
+    {
+        if (MessageBox.Show(
+                this,
+                "锁定 UFUID 是不可逆操作，锁定后不能再次修改 0 块 UID。官方工具会先用 mfoc 读取并保存备份，然后执行锁定。\r\n\r\n确定要继续吗？",
+                "危险操作：锁定 UFUID",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Error,
+                MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+        {
+            return;
+        }
+
+        if (!ConfirmExactText("二次确认锁定 UFUID", "请输入 LOCK UFUID 以确认不可逆操作：", "LOCK UFUID"))
+        {
+            return;
+        }
+
+        var backupPath = GetPcrBackupPath("UFUID-before-lock");
+        await RunOperationAsync("正在备份并锁定 UFUID...", async cancellationToken =>
+        {
+            ConfigurePcr532();
+            var result = await _pcr532.LockUfuidAsync(backupPath, CreatePcrProgress(), cancellationToken);
+            EnsurePcrSuccess(result, "锁定 UFUID");
+            if (!File.Exists(backupPath) || new FileInfo(backupPath).Length == 0)
+            {
+                throw new IOException("UFUID 命令返回成功，但没有生成备份文件，已停止报告为成功。 ");
+            }
+
+            AppendPcrLog($"UFUID 锁定前备份：{backupPath}");
+            AppendLog($"PCR532 UFUID 已锁定；锁定前备份：{backupPath}");
+            SetStatus("UFUID 已锁定，之后不能修改 UID");
+        });
+    }
+
+    private async Task ReadPcrType2Async()
+    {
+        var path = ShowPcrSaveDialog(
+            "保存 Ultralight / NTAG 原始备份",
+            $"Type2-{DateTime.Now:yyyyMMdd-HHmmss}.mfd");
+        if (path is null)
+        {
+            return;
+        }
+
+        await RunOperationAsync("正在读取 Ultralight / NTAG Type 2...", async cancellationToken =>
+        {
+            ConfigurePcr532();
+            var result = await _pcr532.ReadType2Async(path, CreatePcrProgress(), cancellationToken);
+            EnsurePcrSuccess(result, "Type 2 读取");
+            if (!File.Exists(path) || new FileInfo(path).Length == 0)
+            {
+                throw new IOException("Type 2 命令返回成功，但没有生成备份文件。 ");
+            }
+
+            AppendLog($"PCR532 Type 2 备份完成：{path}（{new FileInfo(path).Length} 字节）");
+            SetStatus("Ultralight / NTAG 备份完成");
+        });
+    }
+
+    private async Task WritePcrType2Async()
+    {
+        var path = ShowPcrOpenDialog("选择 Ultralight / NTAG 原始备份");
+        if (path is null)
+        {
+            return;
+        }
+
+        var fileInfo = new FileInfo(path);
+        if (!fileInfo.Exists || fileInfo.Length == 0)
+        {
+            throw new InvalidOperationException("Type 2 备份文件为空。 ");
+        }
+
+        if (MessageBox.Show(
+                this,
+                $"将恢复文件 {path}（{fileInfo.Length} 字节）到当前 Type 2 卡片。\r\n" +
+                "备份中的锁定位、OTP 或配置页可能具有不可逆影响，请确认文件来源可信。\r\n\r\n继续吗？",
+                "确认恢复 Type 2 备份",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+        {
+            return;
+        }
+
+        await RunOperationAsync("正在恢复 Ultralight / NTAG Type 2...", async cancellationToken =>
+        {
+            ConfigurePcr532();
+            if (_pcrAutoBackupCheck.Checked)
+            {
+                var backupPath = GetPcrBackupPath("Type2-before-write", ".mfd");
+                var backup = await _pcr532.ReadType2Async(backupPath, CreatePcrProgress(), cancellationToken);
+                EnsurePcrSuccess(backup, "Type 2 写入前备份");
+                AppendPcrLog($"Type 2 写入前备份：{backupPath}");
+            }
+
+            var result = await _pcr532.WriteType2Async(path, CreatePcrProgress(), cancellationToken);
+            EnsurePcrSuccess(result, "Type 2 写入");
+            AppendLog($"PCR532 Type 2 恢复完成：{path}");
+            SetStatus("Ultralight / NTAG 恢复完成");
+        });
+    }
+
+    private async Task<string> CreatePcrClassicBackupAsync(
+        string? keyFile,
+        string label,
+        CancellationToken cancellationToken)
+    {
+        var backupPath = GetPcrBackupPath($"MIFARE-{label}", ".dump");
+        var result = await _pcr532.ReadClassicWithKnownKeysAsync(
+            backupPath,
+            keyFile,
+            CreatePcrProgress(),
+            cancellationToken);
+        EnsurePcrSuccess(result, "MIFARE 写入前备份");
+        if (!File.Exists(backupPath) || new FileInfo(backupPath).Length == 0)
+        {
+            throw new IOException("MIFARE 写入前命令返回成功，但没有生成备份文件。 ");
+        }
+
+        try
+        {
+            var dump = BackupService.LoadDump(backupPath);
+            if (!dump.IsMifareClassic)
+            {
+                throw new InvalidDataException("PCR532 生成的备份不是 MIFARE Classic 文件。 ");
+            }
+
+            BackupService.SaveCardDump(backupPath, dump.Bytes, "PCR532 写入前自动备份", dump.Kind, mfdExtension: false);
+        }
+        catch (ArgumentException exception)
+        {
+            throw new InvalidDataException("PCR532 生成的备份文件大小异常。 ", exception);
+        }
+
+        AppendPcrLog($"MIFARE 写入前备份：{backupPath}");
+        return backupPath;
+    }
+
+    private void LoadPcrClassicDump(string path, string source)
+    {
+        var dump = BackupService.LoadDump(path);
+        if (!dump.IsMifareClassic)
+        {
+            throw new InvalidDataException($"PCR532 输出文件大小为 {dump.Bytes.Length} 字节，不是支持的 MIFARE Classic 原始文件。 ");
+        }
+
+        _baselineImage = (byte[])dump.Bytes.Clone();
+        SetWorkingImage(dump.Bytes, $"{source} · {Path.GetFileName(path)}", dump.Kind);
+        _mainTabs.SelectedIndex = 0;
+        AppendPcrLog($"已载入工作区：{dump.DisplayName} / {dump.Bytes.Length} 字节");
+    }
+
+    private string? GetPcrKeyFile()
+    {
+        var path = _pcrKeyFileBox.Text.Trim();
+        return path.Length == 0 ? null : path;
+    }
+
+    private string GetPcrBackupPath(string prefix, string extension = ".dump")
+    {
+        var directory = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+            "Ntag5Studio",
+            "PCR532Backups");
+        Directory.CreateDirectory(directory);
+        return Path.Combine(directory, $"{prefix}-{DateTime.Now:yyyyMMdd-HHmmssfff}{extension}");
+    }
+
+    private string? ShowPcrSaveDialog(string title, string fileName)
+    {
+        using var dialog = new SaveFileDialog
+        {
+            Title = title,
+            Filter = "原始卡片文件 (*.dump;*.mfd;*.bin)|*.dump;*.mfd;*.bin|所有文件 (*.*)|*.*",
+            AddExtension = true,
+            DefaultExt = "dump",
+            OverwritePrompt = true,
+            FileName = fileName
+        };
+        return dialog.ShowDialog(this) == DialogResult.OK ? dialog.FileName : null;
+    }
+
+    private string? ShowPcrOpenDialog(string title)
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = title,
+            Filter = "原始卡片文件 (*.dump;*.mfd;*.bin)|*.dump;*.mfd;*.bin|所有文件 (*.*)|*.*",
+            CheckFileExists = true,
+            Multiselect = false
+        };
+        return dialog.ShowDialog(this) == DialogResult.OK ? dialog.FileName : null;
+    }
+
+    private bool ConfirmExactText(string title, string message, string expected)
+    {
+        using var dialog = new Form();
+        using var prompt = new Label();
+        using var input = new TextBox();
+        using var ok = new Button();
+        using var cancel = new Button();
+        dialog.Text = title;
+        dialog.StartPosition = FormStartPosition.CenterParent;
+        dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
+        dialog.MinimizeBox = false;
+        dialog.MaximizeBox = false;
+        dialog.ClientSize = new Size(440, 150);
+        prompt.Text = message;
+        prompt.AutoSize = false;
+        prompt.SetBounds(16, 14, 408, 38);
+        input.SetBounds(16, 58, 408, 26);
+        input.Font = new Font("Consolas", 10F);
+        ok.Text = "确认";
+        ok.DialogResult = DialogResult.OK;
+        ok.SetBounds(258, 105, 78, 30);
+        ok.Enabled = false;
+        cancel.Text = "取消";
+        cancel.DialogResult = DialogResult.Cancel;
+        cancel.SetBounds(346, 105, 78, 30);
+        input.TextChanged += (_, _) => ok.Enabled = string.Equals(input.Text.Trim(), expected, StringComparison.Ordinal);
+        dialog.Controls.AddRange([prompt, input, ok, cancel]);
+        dialog.AcceptButton = ok;
+        dialog.CancelButton = cancel;
+        return dialog.ShowDialog(this) == DialogResult.OK && string.Equals(input.Text.Trim(), expected, StringComparison.Ordinal);
+    }
+
+    private void AppendPcrLog(string message)
+    {
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        if (InvokeRequired)
+        {
+            BeginInvoke(new Action<string>(AppendPcrLog), message);
+            return;
+        }
+
+        _pcrLogBox.AppendText($"[{DateTime.Now:HH:mm:ss}] {message}{Environment.NewLine}");
+        _pcrLogBox.SelectionStart = _pcrLogBox.TextLength;
+        _pcrLogBox.ScrollToCaret();
     }
 
     private async Task RefreshRuntimeStatusAsync(bool showDetails)
@@ -984,6 +1552,23 @@ public sealed partial class MainForm : Form
         _insertBytesButton.Enabled = !_busy && _workingImage is not null;
         _directPreviewButton.Enabled = !_busy;
         _directWriteButton.Enabled = !_busy && connected;
+        var pcrReady = !_busy && _pcr532.IsRuntimeAvailable;
+        _pcrPortBox.Enabled = !_busy;
+        _pcrBaudBox.Enabled = !_busy;
+        _pcrRefreshPortsButton.Enabled = !_busy;
+        _pcrDetectButton.Enabled = pcrReady;
+        _pcrInstallDriverButton.Enabled = !_busy && _pcr532.GetDriverInstallerPath() is not null;
+        _pcrBrowseKeyButton.Enabled = !_busy;
+        _pcrRecoveryReadButton.Enabled = pcrReady;
+        _pcrKnownReadButton.Enabled = pcrReady;
+        _pcrWriteButton.Enabled = pcrReady;
+        _pcrMagicWriteButton.Enabled = pcrReady;
+        _pcrSetUidButton.Enabled = pcrReady;
+        _pcrFormatUidButton.Enabled = pcrReady;
+        _pcrLockUfuidButton.Enabled = pcrReady;
+        _pcrType2ReadButton.Enabled = pcrReady;
+        _pcrType2WriteButton.Enabled = pcrReady;
+        _pcrAutoBackupCheck.Enabled = !_busy;
         _cancelButton.Enabled = _busy;
         _memoryGrid.ReadOnly = _busy || _workingImage is null;
         _connectionStateLabel.Text = connected ? "已连接" : "未连接";

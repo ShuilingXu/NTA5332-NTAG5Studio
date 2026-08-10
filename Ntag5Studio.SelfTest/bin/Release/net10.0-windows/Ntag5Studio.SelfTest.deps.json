@@ -8,17 +8,17 @@
     ".NETCoreApp,Version=v10.0": {
       "Ntag5Studio.SelfTest/1.0.0": {
         "dependencies": {
-          "Ntag5Studio": "1.2.1"
+          "Ntag5Studio": "1.3.0"
         },
         "runtime": {
           "Ntag5Studio.SelfTest.dll": {}
         }
       },
-      "Ntag5Studio/1.2.1": {
+      "Ntag5Studio/1.3.0": {
         "runtime": {
           "Ntag5Studio.dll": {
-            "assemblyVersion": "1.2.1.0",
-            "fileVersion": "1.2.1.0"
+            "assemblyVersion": "1.3.0.0",
+            "fileVersion": "1.3.0.0"
           }
         }
       }
@@ -30,7 +30,7 @@
       "serviceable": false,
       "sha512": ""
     },
-    "Ntag5Studio/1.2.1": {
+    "Ntag5Studio/1.3.0": {
       "type": "project",
       "serviceable": false,
       "sha512": ""

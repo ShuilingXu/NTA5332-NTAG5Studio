@@ -24,6 +24,8 @@ public sealed partial class MainForm
     private readonly Button _verifyButton = new();
     private readonly Button _cancelButton = new();
     private readonly ProgressBar _progressBar = new();
+    private readonly TableLayoutPanel _rootLayout = new();
+    private readonly TabControl _mainTabs = new();
     private readonly DataGridView _memoryGrid = new();
     private readonly Label _sourceValueLabel = new();
     private readonly Label _hashValueLabel = new();
@@ -61,14 +63,37 @@ public sealed partial class MainForm
     private readonly Button _directWriteButton = new();
     private readonly Label _directWriteInfoLabel = new();
     private readonly RichTextBox _directPreviewBox = new();
+    private readonly ComboBox _pcrPortBox = new();
+    private readonly ComboBox _pcrBaudBox = new();
+    private readonly Button _pcrRefreshPortsButton = new();
+    private readonly Button _pcrDetectButton = new();
+    private readonly Button _pcrInstallDriverButton = new();
+    private readonly Label _pcrRuntimeLabel = new();
+    private readonly Label _pcrCardLabel = new();
+    private readonly TextBox _pcrKeyFileBox = new();
+    private readonly Button _pcrBrowseKeyButton = new();
+    private readonly CheckBox _pcrAutoBackupCheck = new();
+    private readonly Button _pcrRecoveryReadButton = new();
+    private readonly Button _pcrKnownReadButton = new();
+    private readonly Button _pcrWriteButton = new();
+    private readonly Button _pcrMagicWriteButton = new();
+    private readonly TextBox _pcrUidBox = new();
+    private readonly Button _pcrSetUidButton = new();
+    private readonly Button _pcrFormatUidButton = new();
+    private readonly Button _pcrLockUfuidButton = new();
+    private readonly Button _pcrType2ReadButton = new();
+    private readonly Button _pcrType2WriteButton = new();
+    private readonly RichTextBox _pcrLogBox = new();
     private readonly RichTextBox _logBox = new();
     private readonly ToolStripStatusLabel _statusLabel = new();
     private readonly ToolTip _toolTip = new();
+    private Control? _ntagConnectionBar;
+    private Control? _ntagActionBar;
 
     private void InitializeLayout()
     {
         SuspendLayout();
-        Text = "Ntag5 Studio - NTA5332 用户区工具";
+        Text = "NFC Studio - NTA5332 与 PCR532 工具";
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(940, 650);
         Size = new Size(1180, 800);
@@ -86,28 +111,73 @@ public sealed partial class MainForm
         _statusLabel.TextAlign = ContentAlignment.MiddleLeft;
         statusStrip.Items.Add(_statusLabel);
 
-        var root = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            RowCount = 4,
-            Margin = Padding.Empty,
-            Padding = Padding.Empty
-        };
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 66));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 50));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _rootLayout.Dock = DockStyle.Fill;
+        _rootLayout.ColumnCount = 1;
+        _rootLayout.RowCount = 5;
+        _rootLayout.Margin = Padding.Empty;
+        _rootLayout.Padding = Padding.Empty;
+        _rootLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+        _rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 66));
+        _rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 50));
+        _rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+        _rootLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        root.Controls.Add(BuildHeader(), 0, 0);
-        root.Controls.Add(BuildConnectionBar(), 0, 1);
-        root.Controls.Add(BuildActionBar(), 0, 2);
-        root.Controls.Add(BuildTabs(), 0, 3);
+        _ntagConnectionBar = BuildConnectionBar();
+        _ntagActionBar = BuildActionBar();
+        _rootLayout.Controls.Add(BuildMenu(), 0, 0);
+        _rootLayout.Controls.Add(BuildHeader(), 0, 1);
+        _rootLayout.Controls.Add(_ntagConnectionBar, 0, 2);
+        _rootLayout.Controls.Add(_ntagActionBar, 0, 3);
+        _rootLayout.Controls.Add(BuildTabs(), 0, 4);
 
-        Controls.Add(root);
+        Controls.Add(_rootLayout);
         Controls.Add(statusStrip);
         ResumeLayout(true);
+    }
+
+    private Control BuildMenu()
+    {
+        var menu = new MenuStrip
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Color.White,
+            Padding = new Padding(8, 2, 0, 2)
+        };
+
+        var fileMenu = new ToolStripMenuItem("文件");
+        var openItem = new ToolStripMenuItem("打开卡片文件...");
+        openItem.Click += (_, _) => OpenBackup();
+        var saveItem = new ToolStripMenuItem("保存当前文件...") { ShortcutKeyDisplayString = "Ctrl+S" };
+        saveItem.Click += (_, _) => SaveBackup();
+        var exportItem = new ToolStripMenuItem("导出 MFD...");
+        exportItem.Click += (_, _) => SaveMfdDump();
+        fileMenu.DropDownItems.AddRange([openItem, saveItem, exportItem]);
+
+        var deviceMenu = new ToolStripMenuItem("设备");
+        var ntagDeviceItem = new ToolStripMenuItem("NTAG5 内置模块");
+        ntagDeviceItem.Click += (_, _) => _mainTabs.SelectedIndex = 0;
+        var pcrDeviceItem = new ToolStripMenuItem("PCR532 外接读卡器");
+        pcrDeviceItem.Click += (_, _) => _mainTabs.SelectedIndex = 1;
+        deviceMenu.DropDownItems.AddRange([ntagDeviceItem, pcrDeviceItem]);
+
+        var workspaceMenu = new ToolStripMenuItem("工作区");
+        AddWorkspaceMenuItem(workspaceMenu, "NTAG5 用户区", 0);
+        AddWorkspaceMenuItem(workspaceMenu, "PCR532 / MIFARE", 1);
+        AddWorkspaceMenuItem(workspaceMenu, "NTAG5 直接写入", 2);
+        AddWorkspaceMenuItem(workspaceMenu, "编码与 NDEF", 3);
+        AddWorkspaceMenuItem(workspaceMenu, "操作日志", 4);
+
+        menu.Items.AddRange([fileMenu, deviceMenu, workspaceMenu]);
+        MainMenuStrip = menu;
+        return menu;
+    }
+
+    private void AddWorkspaceMenuItem(ToolStripMenuItem parent, string text, int tabIndex)
+    {
+        var item = new ToolStripMenuItem(text);
+        item.Click += (_, _) => _mainTabs.SelectedIndex = tabIndex;
+        parent.DropDownItems.Add(item);
     }
 
     private Control BuildHeader()
@@ -121,7 +191,7 @@ public sealed partial class MainForm
         };
         var title = new Label
         {
-            Text = "Ntag5 Studio",
+            Text = "NFC Studio",
             ForeColor = Color.White,
             Font = new Font("Microsoft YaHei UI", 16F, FontStyle.Bold),
             AutoSize = true,
@@ -129,14 +199,14 @@ public sealed partial class MainForm
         };
         var subtitle = new Label
         {
-            Text = "NTA5332 / NTAG 5 boost 用户存储区备份、编辑与校验",
+            Text = "NTA5332 内置模块与 PCR532 外接读卡器统一工作台",
             ForeColor = Color.FromArgb(207, 216, 220),
             AutoSize = true,
             Location = new Point(20, 39)
         };
         var scope = new Label
         {
-            Text = "安全范围  511 块 / 2044 字节",
+            Text = "NTAG5 · MIFARE · Type 2",
             ForeColor = Color.White,
             AutoSize = true,
             Anchor = AnchorStyles.Top | AnchorStyles.Right,
@@ -163,7 +233,7 @@ public sealed partial class MainForm
         };
         bar.Controls.Add(new Label
         {
-            Text = "驱动设备",
+            Text = "NTAG5 内置模块",
             AutoSize = true,
             Margin = new Padding(0, 6, 8, 0)
         });
@@ -223,22 +293,41 @@ public sealed partial class MainForm
 
     private Control BuildTabs()
     {
-        var tabs = new TabControl
+        _mainTabs.Dock = DockStyle.Fill;
+        _mainTabs.Margin = new Padding(10, 8, 10, 8);
+        _mainTabs.Padding = new Point(16, 6);
+        _mainTabs.TabPages.Add(BuildMemoryTab());
+        _mainTabs.TabPages.Add(BuildPcr532Tab());
+        _mainTabs.TabPages.Add(BuildDirectWriteTab());
+        _mainTabs.TabPages.Add(BuildConversionTab());
+        _mainTabs.TabPages.Add(BuildLogTab());
+        _mainTabs.SelectedIndexChanged += (_, _) => UpdateWorkspaceChrome();
+        return _mainTabs;
+    }
+
+    private void UpdateWorkspaceChrome()
+    {
+        var showNtagToolbar = _mainTabs.SelectedIndex != 1;
+        if (_ntagConnectionBar is not null)
         {
-            Dock = DockStyle.Fill,
-            Margin = new Padding(10, 8, 10, 8),
-            Padding = new Point(16, 6)
-        };
-        tabs.TabPages.Add(BuildMemoryTab());
-        tabs.TabPages.Add(BuildConversionTab());
-        tabs.TabPages.Add(BuildDirectWriteTab());
-        tabs.TabPages.Add(BuildLogTab());
-        return tabs;
+            _ntagConnectionBar.Visible = showNtagToolbar;
+        }
+
+        if (_ntagActionBar is not null)
+        {
+            _ntagActionBar.Visible = showNtagToolbar;
+        }
+
+        if (_rootLayout.RowStyles.Count >= 4)
+        {
+            _rootLayout.RowStyles[2].Height = showNtagToolbar ? 50 : 0;
+            _rootLayout.RowStyles[3].Height = showNtagToolbar ? 48 : 0;
+        }
     }
 
     private TabPage BuildMemoryTab()
     {
-        var page = new TabPage("用户区") { BackColor = WindowBackground, Padding = new Padding(0) };
+        var page = new TabPage("NTAG5 用户区") { BackColor = WindowBackground, Padding = new Padding(0) };
         var split = new SplitContainer
         {
             Dock = DockStyle.Fill,
@@ -394,9 +483,200 @@ public sealed partial class MainForm
         return label;
     }
 
+    private TabPage BuildPcr532Tab()
+    {
+        var page = new TabPage("PCR532 / MIFARE") { BackColor = WindowBackground, Padding = new Padding(10) };
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 3,
+            Padding = Padding.Empty
+        };
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 236));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.Controls.Add(BuildPcrConnectionPanel(), 0, 0);
+        root.Controls.Add(BuildPcrOperationsPanel(), 0, 1);
+        root.Controls.Add(BuildPcrLogPanel(), 0, 2);
+        page.Controls.Add(root);
+        return page;
+    }
+
+    private Control BuildPcrConnectionPanel()
+    {
+        var group = NewGroup("PCR532 设备");
+        group.Margin = new Padding(0, 0, 0, 8);
+        var flow = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            WrapContents = false,
+            Padding = new Padding(4, 4, 4, 2)
+        };
+        flow.Controls.Add(new Label { Text = "串口", AutoSize = true, Margin = new Padding(0, 7, 7, 0) });
+        _pcrPortBox.Width = 92;
+        _pcrPortBox.DropDownStyle = ComboBoxStyle.DropDown;
+        _pcrPortBox.Font = new Font("Consolas", 9.5F);
+        _pcrPortBox.Margin = new Padding(0, 3, 8, 0);
+        flow.Controls.Add(_pcrPortBox);
+
+        flow.Controls.Add(new Label { Text = "速度", AutoSize = true, Margin = new Padding(2, 7, 7, 0) });
+        _pcrBaudBox.Items.AddRange(["115200", "921600"]);
+        _pcrBaudBox.DropDownStyle = ComboBoxStyle.DropDownList;
+        _pcrBaudBox.SelectedIndex = 0;
+        _pcrBaudBox.Width = 98;
+        _pcrBaudBox.Font = new Font("Consolas", 9.5F);
+        _pcrBaudBox.Margin = new Padding(0, 3, 8, 0);
+        flow.Controls.Add(_pcrBaudBox);
+
+        ConfigureCommandButton(_pcrRefreshPortsButton, "刷新串口", 88);
+        ConfigureCommandButton(_pcrDetectButton, "检测设备/卡片", 124, primary: true);
+        ConfigureCommandButton(_pcrInstallDriverButton, "安装CH341驱动", 122);
+        flow.Controls.Add(_pcrRefreshPortsButton);
+        flow.Controls.Add(_pcrDetectButton);
+        flow.Controls.Add(_pcrInstallDriverButton);
+
+        _pcrRuntimeLabel.Text = "运行组件：检测中";
+        _pcrRuntimeLabel.AutoSize = true;
+        _pcrRuntimeLabel.ForeColor = Color.FromArgb(90, 90, 90);
+        _pcrRuntimeLabel.Margin = new Padding(8, 7, 0, 0);
+        flow.Controls.Add(_pcrRuntimeLabel);
+        group.Controls.Add(flow);
+        return group;
+    }
+
+    private Control BuildPcrOperationsPanel()
+    {
+        var table = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 3,
+            RowCount = 1,
+            Padding = Padding.Empty
+        };
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+        table.Controls.Add(BuildPcrClassicGroup(), 0, 0);
+        table.Controls.Add(BuildPcrUidGroup(), 1, 0);
+        table.Controls.Add(BuildPcrType2Group(), 2, 0);
+        return table;
+    }
+
+    private Control BuildPcrClassicGroup()
+    {
+        var group = NewGroup("MIFARE Classic");
+        group.Margin = new Padding(0, 0, 8, 8);
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Padding = new Padding(4) };
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        var keyRow = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
+        keyRow.Controls.Add(new Label { Text = "密钥文件", AutoSize = true, Margin = new Padding(0, 7, 6, 0) });
+        _pcrKeyFileBox.ReadOnly = true;
+        _pcrKeyFileBox.PlaceholderText = "可选 .mfd/.dump";
+        _pcrKeyFileBox.Width = 190;
+        _pcrKeyFileBox.Margin = new Padding(0, 3, 6, 0);
+        ConfigureCommandButton(_pcrBrowseKeyButton, "选择", 62);
+        keyRow.Controls.Add(_pcrKeyFileBox);
+        keyRow.Controls.Add(_pcrBrowseKeyButton);
+        root.Controls.Add(keyRow, 0, 0);
+
+        _pcrAutoBackupCheck.Text = "写入、改 UID 和格式化前自动备份";
+        _pcrAutoBackupCheck.Checked = true;
+        _pcrAutoBackupCheck.AutoSize = true;
+        _pcrAutoBackupCheck.Margin = new Padding(0, 4, 0, 0);
+        root.Controls.Add(_pcrAutoBackupCheck, 0, 1);
+
+        var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = true, Padding = new Padding(0, 5, 0, 0) };
+        ConfigureCommandButton(_pcrRecoveryReadButton, "恢复密钥并备份", 142, primary: true);
+        ConfigureCommandButton(_pcrKnownReadButton, "按现有密钥读取", 142);
+        ConfigureCommandButton(_pcrWriteButton, "写入普通卡", 142);
+        ConfigureCommandButton(_pcrMagicWriteButton, "写入 UID/CUID 卡", 142);
+        buttons.Controls.AddRange([_pcrRecoveryReadButton, _pcrKnownReadButton, _pcrWriteButton, _pcrMagicWriteButton]);
+        root.Controls.Add(buttons, 0, 2);
+        group.Controls.Add(root);
+        return group;
+    }
+
+    private Control BuildPcrUidGroup()
+    {
+        var group = NewGroup("UID / UFUID 魔术卡");
+        group.Margin = new Padding(0, 0, 8, 8);
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Padding = new Padding(4) };
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 76));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        var uidRow = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
+        uidRow.Controls.Add(new Label { Text = "UID", AutoSize = true, Margin = new Padding(0, 7, 6, 0) });
+        _pcrUidBox.Text = "11223344";
+        _pcrUidBox.Width = 100;
+        _pcrUidBox.MaxLength = 11;
+        _pcrUidBox.CharacterCasing = CharacterCasing.Upper;
+        _pcrUidBox.Font = new Font("Consolas", 10F);
+        _pcrUidBox.Margin = new Padding(0, 3, 6, 0);
+        ConfigureCommandButton(_pcrSetUidButton, "设置 UID", 88);
+        uidRow.Controls.Add(_pcrUidBox);
+        uidRow.Controls.Add(_pcrSetUidButton);
+        root.Controls.Add(uidRow, 0, 0);
+
+        var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = true, Padding = new Padding(0, 5, 0, 0) };
+        ConfigureCommandButton(_pcrFormatUidButton, "格式化 UID 卡", 122);
+        ConfigureCommandButton(_pcrLockUfuidButton, "锁定 UFUID", 122);
+        _pcrLockUfuidButton.BackColor = Color.FromArgb(255, 245, 245);
+        _pcrLockUfuidButton.FlatAppearance.BorderColor = Color.FromArgb(198, 40, 40);
+        _pcrLockUfuidButton.ForeColor = Color.FromArgb(160, 25, 25);
+        actions.Controls.AddRange([_pcrFormatUidButton, _pcrLockUfuidButton]);
+        root.Controls.Add(actions, 0, 1);
+
+        _pcrCardLabel.Text = "卡片：尚未检测";
+        _pcrCardLabel.Dock = DockStyle.Fill;
+        _pcrCardLabel.AutoEllipsis = true;
+        _pcrCardLabel.ForeColor = Color.FromArgb(75, 75, 75);
+        _pcrCardLabel.Padding = new Padding(0, 8, 0, 0);
+        root.Controls.Add(_pcrCardLabel, 0, 2);
+        group.Controls.Add(root);
+        return group;
+    }
+
+    private Control BuildPcrType2Group()
+    {
+        var group = NewGroup("Ultralight / NTAG (Type 2)");
+        group.Margin = new Padding(0, 0, 0, 8);
+        var buttons = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            Padding = new Padding(4, 8, 4, 4)
+        };
+        ConfigureCommandButton(_pcrType2ReadButton, "读取原始备份", 144, primary: true);
+        ConfigureCommandButton(_pcrType2WriteButton, "恢复原始备份", 144);
+        buttons.Controls.AddRange([_pcrType2ReadButton, _pcrType2WriteButton]);
+        group.Controls.Add(buttons);
+        return group;
+    }
+
+    private Control BuildPcrLogPanel()
+    {
+        var group = NewGroup("PCR532 输出");
+        group.AutoSize = false;
+        group.Margin = Padding.Empty;
+        _pcrLogBox.Dock = DockStyle.Fill;
+        _pcrLogBox.ReadOnly = true;
+        _pcrLogBox.BackColor = Color.FromArgb(250, 250, 250);
+        _pcrLogBox.BorderStyle = BorderStyle.FixedSingle;
+        _pcrLogBox.Font = new Font("Consolas", 9.5F);
+        _pcrLogBox.WordWrap = false;
+        group.Controls.Add(_pcrLogBox);
+        return group;
+    }
+
     private TabPage BuildConversionTab()
     {
-        var page = new TabPage("编码转换") { BackColor = WindowBackground, Padding = new Padding(10) };
+        var page = new TabPage("编码与 NDEF") { BackColor = WindowBackground, Padding = new Padding(10) };
         var split = new SplitContainer
         {
             Dock = DockStyle.Fill,
@@ -533,7 +813,7 @@ public sealed partial class MainForm
 
     private TabPage BuildDirectWriteTab()
     {
-        var page = new TabPage("直接写入") { BackColor = WindowBackground, Padding = new Padding(10) };
+        var page = new TabPage("NTAG5 直接写入") { BackColor = WindowBackground, Padding = new Padding(10) };
         var split = new SplitContainer
         {
             Dock = DockStyle.Fill,
