@@ -21,6 +21,7 @@ var tests = new (string Name, Action Run)[]
     ("Type 5 / NDEF URI 解析", TestNdef),
     ("备份及元数据", TestBackup),
     ("MFD 原始 dump", TestMfdDump),
+    ("S50 文件识别", TestMifareClassicDump),
     ("运行状态解析", TestRuntimeStatus),
     ("供应商设备路径", TestDevicePath),
     ("供应商驱动控制码", TestVendorIoctls)
@@ -138,6 +139,38 @@ static void TestMfdDump()
         var metadata = File.ReadAllText(metadataPath);
         Assert(metadata.Contains("raw .mfd dump", StringComparison.Ordinal), "mfd metadata format");
         Assert(metadata.Contains(BackupService.RawDumpDescription, StringComparison.Ordinal), "mfd metadata layout");
+    }
+    finally
+    {
+        File.Delete(path);
+        File.Delete(metadataPath);
+    }
+}
+
+static void TestMifareClassicDump()
+{
+    var image = new byte[1024];
+    for (var i = 0; i < image.Length; i++)
+    {
+        image[i] = (byte)(i & 0xFF);
+    }
+
+    var path = Path.Combine(Environment.CurrentDirectory, "Ntag5Studio.SelfTest.tmp-s50.dump");
+    var metadataPath = path + ".json";
+    try
+    {
+        File.WriteAllBytes(path, image);
+        var dump = BackupService.LoadDump(path);
+        Assert(dump.Kind == CardDumpKind.MifareClassic1K, "S50 kind");
+        Assert(dump.Bytes.SequenceEqual(image), "S50 raw bytes");
+        Assert(CardDumpFormat.GetLogicalBlockCount(dump.Kind) == 64, "S50 blocks");
+        Assert(CardDumpFormat.GetSectorNumber(dump.Kind, 3) == 0, "S50 first sector");
+        Assert(CardDumpFormat.IsSectorTrailer(dump.Kind, 3), "S50 trailer");
+        Assert(!CardDumpFormat.IsSectorTrailer(dump.Kind, 4), "S50 data block");
+
+        BackupService.SaveCardDump(path, image, "self-test S50", dump.Kind, mfdExtension: true);
+        Assert(File.ReadAllBytes(path).SequenceEqual(image), "S50 save round trip");
+        Assert(File.ReadAllText(metadataPath).Contains("MIFARE Classic 1K / S50", StringComparison.Ordinal), "S50 metadata");
     }
     finally
     {

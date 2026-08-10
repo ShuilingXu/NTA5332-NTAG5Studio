@@ -12,7 +12,7 @@
     "C:\\Users\\Admin\\.nuget\\packages\\": {}
   },
   "project": {
-    "version": "1.2.0",
+    "version": "1.2.1",
     "restore": {
       "projectUniqueName": "C:\\Users\\Admin\\Desktop\\NFC_Driver_20.0.0.1\\Ntag5Studio\\Ntag5Studio.csproj",
       "projectName": "Ntag5Studio",

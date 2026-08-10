@@ -6,13 +6,25 @@ namespace Ntag5Studio.Services;
 public static class BackupService
 {
     public const string RawDumpDescription =
-        "Raw bytes in I2C user-block order; no file header, trailer or container metadata.";
+        "Raw bytes in card memory order; no file header, trailer or container metadata.";
+
+    public static LoadedCardDump LoadDump(string path)
+    {
+        var bytes = File.ReadAllBytes(path);
+        return new LoadedCardDump(bytes, CardDumpFormat.Detect(bytes.Length));
+    }
 
     public static byte[] Load(string path)
     {
-        var bytes = File.ReadAllBytes(path);
-        Ntag5Memory.ValidateImage(bytes);
-        return bytes;
+        var dump = LoadDump(path);
+        if (!dump.IsNtag5)
+        {
+            throw new ArgumentException(
+                $"该文件是 {dump.DisplayName}（{dump.Bytes.Length} 字节），不是 2044 字节 NTAG5 用户区镜像。",
+                nameof(path));
+        }
+
+        return dump.Bytes;
     }
 
     public static string Save(string path, byte[] data, string source)
@@ -25,18 +37,48 @@ public static class BackupService
         return SaveRawImage(path, data, source, "ntag5-user-memory-mfd-dump/v1", "PCR532/libnfc-style raw .mfd dump");
     }
 
-    private static string SaveRawImage(string path, byte[] data, string source, string schema, string format)
+    public static string SaveCardDump(string path, byte[] data, string source, CardDumpKind kind, bool mfdExtension)
     {
-        Ntag5Memory.ValidateImage(data);
+        CardDumpFormat.Validate(data, kind);
+        if (kind == CardDumpKind.Ntag5UserMemory)
+        {
+            return mfdExtension ? SaveMfdDump(path, data, source) : Save(path, data, source);
+        }
+
+        var displayName = CardDumpFormat.GetDisplayName(kind);
+        return SaveRawImage(
+            path,
+            data,
+            source,
+            "mifare-classic-raw-dump/v1",
+            $"{displayName} raw {(mfdExtension ? ".mfd" : "dump")}",
+            kind);
+    }
+
+    private static string SaveRawImage(
+        string path,
+        byte[] data,
+        string source,
+        string schema,
+        string format,
+        CardDumpKind kind = CardDumpKind.Ntag5UserMemory)
+    {
+        CardDumpFormat.Validate(data, kind);
         File.WriteAllBytes(path, data);
+
+        var isNtag5 = kind == CardDumpKind.Ntag5UserMemory;
+        var blockSize = CardDumpFormat.GetLogicalBlockSize(kind);
+        var blockCount = CardDumpFormat.GetLogicalBlockCount(kind);
 
         var metadata = new BackupMetadata(
             Schema: schema,
-            Device: "NXP NTA5332 / NTAG 5 boost",
-            Region: "I2C user EEPROM blocks 0x0000-0x01FE",
-            BlockSize: Ntag5Memory.BytesPerBlock,
-            BlockCount: Ntag5Memory.UserBlockCount,
-            ByteCount: Ntag5Memory.UserByteCount,
+            Device: CardDumpFormat.GetDisplayName(kind),
+            Region: isNtag5
+                ? "I2C user EEPROM blocks 0x0000-0x01FE"
+                : $"Linear MIFARE Classic memory image, {blockCount} blocks",
+            BlockSize: blockSize,
+            BlockCount: blockCount,
+            ByteCount: data.Length,
             Format: format,
             Layout: RawDumpDescription,
             CreatedLocal: DateTimeOffset.Now,

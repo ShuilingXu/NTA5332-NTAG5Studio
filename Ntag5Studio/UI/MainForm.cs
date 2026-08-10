@@ -17,7 +17,11 @@ public sealed partial class MainForm : Form
     private bool _busy;
     private bool _loadingGrid;
     private string _imageSource = "尚未载入";
+    private CardDumpKind _workingDumpKind = CardDumpKind.Ntag5UserMemory;
     private Ntag5RuntimeStatus? _runtimeStatus;
+
+    private bool HasNtag5WorkingImage =>
+        _workingImage is not null && _workingDumpKind == CardDumpKind.Ntag5UserMemory;
 
     private sealed record PreparedChipWrite(
         byte[] Target,
@@ -208,22 +212,45 @@ public sealed partial class MainForm : Form
         {
             using var dialog = new OpenFileDialog
             {
-                Filter = "NTAG5 原始备份 / Dump (*.bin;*.mfd)|*.bin;*.mfd|NTAG5 原始备份 (*.bin)|*.bin|PCR532/libnfc Dump (*.mfd)|*.mfd|所有文件 (*.*)|*.*",
+                Filter = "原始卡片文件 (*.bin;*.mfd;*.dump)|*.bin;*.mfd;*.dump|NTAG5 原始备份 (*.bin)|*.bin|PCR532/libnfc 文件 (*.mfd;*.dump)|*.mfd;*.dump|所有文件 (*.*)|*.*",
                 CheckFileExists = true,
                 Multiselect = false,
-                Title = "打开 2044 字节 NTAG5 用户区备份或 MFD dump"
+                Title = "打开 NTAG5 或 MIFARE Classic 原始卡片文件"
             };
             if (dialog.ShowDialog(this) != DialogResult.OK)
             {
                 return;
             }
 
-            var bytes = BackupService.Load(dialog.FileName);
-            SetWorkingImage(bytes, $"备份 {Path.GetFileName(dialog.FileName)}");
-            AppendLog($"已打开备份：{dialog.FileName}");
-            SetStatus(_baselineImage is null
-                ? "备份已载入；写入前将自动读取并备份当前芯片"
-                : "备份已载入；黄色单元格表示它与最近芯片读取的差异");
+            var dump = BackupService.LoadDump(dialog.FileName);
+            if (_baselineImage is null || _baselineImage.Length != dump.Bytes.Length || !dump.IsNtag5)
+            {
+                _baselineImage = dump.IsNtag5 ? null : (byte[])dump.Bytes.Clone();
+            }
+
+            SetWorkingImage(
+                dump.Bytes,
+                $"{dump.DisplayName} · {Path.GetFileName(dialog.FileName)}",
+                dump.Kind);
+            AppendLog($"已打开：{dialog.FileName}");
+            AppendLog($"识别格式：{dump.DisplayName}，{dump.Bytes.Length} 字节。");
+
+            if (dump.IsNtag5)
+            {
+                SetStatus(_baselineImage is null
+                    ? "NTAG5 备份已载入；写入前将自动读取并备份当前芯片"
+                    : "NTAG5 备份已载入；黄色单元格表示它与最近芯片读取的差异");
+                return;
+            }
+
+            SetStatus($"已载入 {dump.DisplayName}；可离线查看、编辑、转换并按原尺寸保存");
+            MessageBox.Show(
+                this,
+                $"已识别为 {dump.DisplayName} 原始文件，共 {dump.Bytes.Length} 字节。\r\n\r\n" +
+                "可以离线查看、编辑、编码转换并按原尺寸保存。NTA5332 不是 MIFARE Classic 读写器，因此不会启用“写入变化”和芯片校验。",
+                "S50 / MIFARE Classic 文件已载入",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
         });
     }
 
@@ -234,11 +261,11 @@ public sealed partial class MainForm : Form
             var data = GetWorkingSnapshot();
             using var dialog = new SaveFileDialog
             {
-                Filter = "NTAG5 原始备份 (*.bin)|*.bin|PCR532/libnfc Dump (*.mfd)|*.mfd|所有文件 (*.*)|*.*",
+                Filter = "原始卡片文件 (*.bin;*.mfd;*.dump)|*.bin;*.mfd;*.dump|NTAG5 原始备份 (*.bin)|*.bin|PCR532/libnfc 文件 (*.mfd;*.dump)|*.mfd;*.dump|所有文件 (*.*)|*.*",
                 AddExtension = true,
                 DefaultExt = "bin",
                 FileName = $"NTA5332-user-{DateTime.Now:yyyyMMdd-HHmmss}.bin",
-                Title = "保存 NTAG5 用户区备份"
+                Title = $"保存 {CardDumpFormat.GetDisplayName(_workingDumpKind)} 原始文件"
             };
             if (dialog.ShowDialog(this) != DialogResult.OK)
             {
@@ -246,14 +273,7 @@ public sealed partial class MainForm : Form
             }
 
             var isMfd = Path.GetExtension(dialog.FileName).Equals(".mfd", StringComparison.OrdinalIgnoreCase);
-            if (isMfd)
-            {
-                BackupService.SaveMfdDump(dialog.FileName, data, _imageSource);
-            }
-            else
-            {
-                BackupService.Save(dialog.FileName, data, _imageSource);
-            }
+            BackupService.SaveCardDump(dialog.FileName, data, _imageSource, _workingDumpKind, isMfd);
 
             AppendLog($"备份已保存：{dialog.FileName}");
             AppendLog($"元数据已保存：{dialog.FileName}.json");
@@ -271,7 +291,7 @@ public sealed partial class MainForm : Form
                 Filter = "PCR532/libnfc Dump (*.mfd)|*.mfd|所有文件 (*.*)|*.*",
                 AddExtension = true,
                 DefaultExt = "mfd",
-                FileName = $"NTA5332-user-{DateTime.Now:yyyyMMdd-HHmmss}.mfd",
+                FileName = $"{(_workingDumpKind == CardDumpKind.Ntag5UserMemory ? "NTA5332-user" : "MIFARE-dump")}-{DateTime.Now:yyyyMMdd-HHmmss}.mfd",
                 Title = "导出 PCR532/libnfc 兼容 MFD dump"
             };
             if (dialog.ShowDialog(this) != DialogResult.OK)
@@ -279,9 +299,9 @@ public sealed partial class MainForm : Form
                 return;
             }
 
-            BackupService.SaveMfdDump(dialog.FileName, data, _imageSource);
+            BackupService.SaveCardDump(dialog.FileName, data, _imageSource, _workingDumpKind, mfdExtension: true);
             AppendLog($"MFD 原始 dump 已保存：{dialog.FileName}");
-            AppendLog("MFD 文件内容为 2044 字节线性用户区镜像，不包含自定义文件头。");
+            AppendLog($"文件内容为 {data.Length} 字节 {CardDumpFormat.GetDisplayName(_workingDumpKind)} 原始镜像，不包含自定义文件头。");
             AppendLog($"元数据已保存：{dialog.FileName}.json");
             SetStatus("MFD dump 与校验元数据保存完成");
         });
@@ -289,7 +309,7 @@ public sealed partial class MainForm : Form
 
     private async Task WriteChangesAsync()
     {
-        var target = GetWorkingSnapshot();
+        var target = GetNtag5WorkingSnapshot();
         await ExecuteChipWriteAsync(
             "写入前正在读取当前芯片...",
             _ => new PreparedChipWrite(
@@ -387,7 +407,7 @@ public sealed partial class MainForm : Form
 
     private async Task VerifyAsync()
     {
-        var expected = GetWorkingSnapshot();
+        var expected = GetNtag5WorkingSnapshot();
         await RunOperationAsync("正在读取芯片并校验...", async cancellationToken =>
         {
             await ReadAndApplyRuntimeStatusAsync(cancellationToken);
@@ -455,11 +475,15 @@ public sealed partial class MainForm : Form
         }
     }
 
-    private void SetWorkingImage(byte[] image, string source)
+    private void SetWorkingImage(
+        byte[] image,
+        string source,
+        CardDumpKind kind = CardDumpKind.Ntag5UserMemory)
     {
-        Ntag5Memory.ValidateImage(image);
+        CardDumpFormat.Validate(image, kind);
         _workingImage = (byte[])image.Clone();
         _imageSource = source;
+        _workingDumpKind = kind;
         PopulateGrid();
         RefreshDifferenceDisplay();
         UpdateSelectedBlockDetails();
@@ -472,6 +496,7 @@ public sealed partial class MainForm : Form
         _workingImage = (byte[])image.Clone();
         _baselineImage = (byte[])image.Clone();
         _imageSource = source;
+        _workingDumpKind = CardDumpKind.Ntag5UserMemory;
         PopulateGrid();
         RefreshDifferenceDisplay();
         UpdateSelectedBlockDetails();
@@ -482,11 +507,25 @@ public sealed partial class MainForm : Form
     {
         if (_workingImage is null)
         {
-            throw new InvalidOperationException("请先读取芯片或打开一份 2044 字节备份。");
+            throw new InvalidOperationException("请先读取芯片或打开一份支持的原始卡片文件。");
         }
 
         _memoryGrid.EndEdit();
         return (byte[])_workingImage.Clone();
+    }
+
+    private byte[] GetNtag5WorkingSnapshot()
+    {
+        var data = GetWorkingSnapshot();
+        if (!HasNtag5WorkingImage)
+        {
+            throw new InvalidOperationException(
+                $"当前载入的是 {CardDumpFormat.GetDisplayName(_workingDumpKind)} 文件（{data.Length} 字节）。" +
+                "NTA5332 只能写入 2044 字节 NTAG5 用户区镜像；S50 文件只能离线编辑和保存。");
+        }
+
+        Ntag5Memory.ValidateImage(data);
+        return data;
     }
 
     private void PopulateGrid()
@@ -499,7 +538,22 @@ public sealed partial class MainForm : Form
         _loadingGrid = true;
         try
         {
-            for (var block = 0; block < Ntag5Memory.UserBlockCount; block++)
+            var rowCount = (_workingImage.Length + Ntag5Memory.BytesPerBlock - 1) / Ntag5Memory.BytesPerBlock;
+            if (_memoryGrid.Rows.Count != rowCount)
+            {
+                _memoryGrid.Rows.Clear();
+                _memoryGrid.Columns[0].HeaderText = CardDumpFormat.IsMifareClassic(_workingDumpKind) ? "块.组" : "块";
+                for (var rowIndex = 0; rowIndex < rowCount; rowIndex++)
+                {
+                    var offset = rowIndex * Ntag5Memory.BytesPerBlock;
+                    var blockLabel = CardDumpFormat.IsMifareClassic(_workingDumpKind)
+                        ? $"0x{rowIndex / 4:X2}.{rowIndex % 4}"
+                        : $"0x{rowIndex:X3}";
+                    _memoryGrid.Rows.Add(blockLabel, $"0x{offset:X4}", "--", "--", "--", "--", "....");
+                }
+            }
+
+            for (var block = 0; block < rowCount; block++)
             {
                 RefreshGridRow(block);
             }
@@ -519,12 +573,20 @@ public sealed partial class MainForm : Form
 
         var row = _memoryGrid.Rows[block];
         var offset = block * Ntag5Memory.BytesPerBlock;
-        for (var column = 0; column < Ntag5Memory.BytesPerBlock; column++)
+        if (offset >= _workingImage.Length)
         {
-            row.Cells[column + 2].Value = _workingImage[offset + column].ToString("X2");
+            return;
         }
 
-        row.Cells[6].Value = Ntag5Memory.ToDisplayAscii(_workingImage.AsSpan(offset, Ntag5Memory.BytesPerBlock));
+        for (var column = 0; column < Ntag5Memory.BytesPerBlock; column++)
+        {
+            var available = offset + column < _workingImage.Length;
+            row.Cells[column + 2].Value = available ? _workingImage[offset + column].ToString("X2") : "--";
+            row.Cells[column + 2].ReadOnly = !available;
+        }
+
+        var byteCount = Math.Min(Ntag5Memory.BytesPerBlock, _workingImage.Length - offset);
+        row.Cells[6].Value = Ntag5Memory.ToDisplayAscii(_workingImage.AsSpan(offset, byteCount));
     }
 
     private void ValidateHexCell(object? sender, DataGridViewCellValidatingEventArgs eventArgs)
@@ -552,8 +614,14 @@ public sealed partial class MainForm : Form
             return;
         }
 
+        var offset = eventArgs.RowIndex * Ntag5Memory.BytesPerBlock + eventArgs.ColumnIndex - 2;
+        if (offset >= _workingImage.Length)
+        {
+            return;
+        }
+
         var value = HexCodec.ParseByte(_memoryGrid.Rows[eventArgs.RowIndex].Cells[eventArgs.ColumnIndex].Value?.ToString());
-        _workingImage[eventArgs.RowIndex * Ntag5Memory.BytesPerBlock + eventArgs.ColumnIndex - 2] = value;
+        _workingImage[offset] = value;
         _memoryGrid.Rows[eventArgs.RowIndex].Cells[eventArgs.ColumnIndex].Value = value.ToString("X2");
         RefreshGridRow(eventArgs.RowIndex);
         RefreshDifferenceDisplay();
@@ -568,7 +636,10 @@ public sealed partial class MainForm : Form
         }
 
         var offset = eventArgs.RowIndex * Ntag5Memory.BytesPerBlock + eventArgs.ColumnIndex - 2;
-        var changed = _baselineImage is not null && _workingImage[offset] != _baselineImage[offset];
+        var changed = _baselineImage is not null &&
+                      _baselineImage.Length == _workingImage.Length &&
+                      offset < _workingImage.Length &&
+                      _workingImage[offset] != _baselineImage[offset];
         eventArgs.CellStyle.BackColor = changed ? Warning : Color.White;
     }
 
@@ -584,9 +655,23 @@ public sealed partial class MainForm : Form
         {
             _differenceValueLabel.Text = "无芯片比较基准";
         }
+        else if (_baselineImage.Length != _workingImage.Length)
+        {
+            _differenceValueLabel.Text = "比较基准长度不同";
+        }
         else
         {
-            var count = Ntag5Memory.GetChangedBlocks(_baselineImage, _workingImage).Count;
+            var blockSize = CardDumpFormat.GetLogicalBlockSize(_workingDumpKind);
+            var count = 0;
+            for (var offset = 0; offset < _workingImage.Length; offset += blockSize)
+            {
+                if (!_workingImage.AsSpan(offset, Math.Min(blockSize, _workingImage.Length - offset))
+                    .SequenceEqual(_baselineImage.AsSpan(offset, Math.Min(blockSize, _baselineImage.Length - offset))))
+                {
+                    count++;
+                }
+            }
+
             _differenceValueLabel.Text = count == 0 ? "0（完全一致）" : $"{count} 个块";
         }
 
@@ -604,6 +689,29 @@ public sealed partial class MainForm : Form
 
         var block = _memoryGrid.CurrentCell.RowIndex;
         var offset = block * Ntag5Memory.BytesPerBlock;
+        if (CardDumpFormat.IsMifareClassic(_workingDumpKind))
+        {
+            var mifareBlock = block / 4;
+            var blockOffset = mifareBlock * CardDumpFormat.MifareBlockSize;
+            var blockBytes = _workingImage.AsSpan(blockOffset, CardDumpFormat.MifareBlockSize);
+            var sector = CardDumpFormat.GetSectorNumber(_workingDumpKind, mifareBlock);
+            var trailer = CardDumpFormat.IsSectorTrailer(_workingDumpKind, mifareBlock);
+            var cardLabel = _workingDumpKind == CardDumpKind.MifareClassic1K ? "S50" : "MIFARE";
+            _selectedBlockLabel.Text = $"{cardLabel} 块 0x{mifareBlock:X2} / 扇区 {sector} / 偏移 0x{blockOffset:X4}";
+            _selectedBlockDetailsBox.Text =
+                $"Hex    {HexCodec.ToSpacedHex(blockBytes)}{Environment.NewLine}" +
+                $"ASCII  {Ntag5Memory.ToDisplayAscii(blockBytes)}{Environment.NewLine}" +
+                (trailer
+                    ? $"类型   扇区 Trailer（Key A / Access / Key B）{Environment.NewLine}" +
+                      $"Key A  {HexCodec.ToSpacedHex(blockBytes[..6])}{Environment.NewLine}" +
+                      $"Access {HexCodec.ToSpacedHex(blockBytes.Slice(6, 4))}{Environment.NewLine}" +
+                      $"Key B  {HexCodec.ToSpacedHex(blockBytes.Slice(10, 6))}"
+                    : $"类型   数据块{Environment.NewLine}" +
+                      $"UInt32 LE  {BinaryPrimitives.ReadUInt32LittleEndian(blockBytes)}{Environment.NewLine}" +
+                      $"UInt32 BE  {BinaryPrimitives.ReadUInt32BigEndian(blockBytes)}");
+            return;
+        }
+
         var bytes = _workingImage.AsSpan(offset, Ntag5Memory.BytesPerBlock);
         _selectedBlockLabel.Text = $"块 0x{block:X3} / 偏移 0x{offset:X4}";
         _selectedBlockDetailsBox.Text =
@@ -618,15 +726,23 @@ public sealed partial class MainForm : Form
         TryUserAction("跳转", () =>
         {
             var block = ParseHexNumber(_jumpBlockBox.Text, "块地址");
-            if (block is < 0 or > Ntag5Memory.LastI2cUserBlock)
+            var maxBlock = CardDumpFormat.IsMifareClassic(_workingDumpKind)
+                ? CardDumpFormat.GetLogicalBlockCount(_workingDumpKind) - 1
+                : Ntag5Memory.LastI2cUserBlock;
+            if (block < 0 || block > maxBlock)
             {
-                throw new ArgumentOutOfRangeException(nameof(block), "块地址必须在 000-1FE 之间。");
+                throw new ArgumentOutOfRangeException(
+                    nameof(block),
+                    CardDumpFormat.IsMifareClassic(_workingDumpKind)
+                        ? $"块地址必须在 00-{maxBlock:X2} 之间。"
+                        : "块地址必须在 000-1FE 之间。");
             }
 
             _memoryGrid.ClearSelection();
-            _memoryGrid.CurrentCell = _memoryGrid.Rows[block].Cells[2];
-            _memoryGrid.Rows[block].Cells[2].Selected = true;
-            _memoryGrid.FirstDisplayedScrollingRowIndex = Math.Max(0, block - 5);
+            var row = CardDumpFormat.IsMifareClassic(_workingDumpKind) ? block * 4 : block;
+            _memoryGrid.CurrentCell = _memoryGrid.Rows[row].Cells[2];
+            _memoryGrid.Rows[row].Cells[2].Selected = true;
+            _memoryGrid.FirstDisplayedScrollingRowIndex = Math.Max(0, row - 5);
         });
     }
 
@@ -703,11 +819,11 @@ public sealed partial class MainForm : Form
             }
 
             var offset = ParseHexNumber(_insertOffsetBox.Text, "偏移");
-            if (offset < 0 || offset + _convertedBytes.Length > Ntag5Memory.UserByteCount)
+            if (offset < 0 || _workingImage is null || offset + _convertedBytes.Length > _workingImage.Length)
             {
                 throw new ArgumentOutOfRangeException(
                     nameof(offset),
-                    $"插入范围必须位于 0x0000-0x{Ntag5Memory.UserByteCount - 1:X4}。当前数据为 {_convertedBytes.Length} 字节。");
+                    $"插入范围必须位于 0x0000-0x{_workingImage?.Length - 1:X4}。当前数据为 {_convertedBytes.Length} 字节。");
             }
 
             var confirmation = MessageBox.Show(
@@ -741,7 +857,9 @@ public sealed partial class MainForm : Form
             _imageSource = "编码转换插入后的编辑结果";
             RefreshDifferenceDisplay();
             AppendLog($"离线编辑：在偏移 0x{offset:X4} 插入 {_convertedBytes.Length} 字节。尚未写入芯片。");
-            SetStatus("已插入离线编辑区；使用“写入变化”才会修改芯片");
+            SetStatus(HasNtag5WorkingImage
+                ? "已插入离线编辑区；使用“写入变化”才会修改芯片"
+                : "已插入 S50 离线文件；使用“保存备份”或“导出MFD”保存修改");
         });
     }
 
@@ -843,7 +961,7 @@ public sealed partial class MainForm : Form
     {
         TryUserAction("Type 5 / NDEF 解析", () =>
         {
-            var data = GetWorkingSnapshot();
+            var data = GetNtag5WorkingSnapshot();
             _ndefOutputBox.Text = NdefParser.ParseType5Image(data);
             SetStatus("Type 5 TLV / NDEF 解析完成");
         });
@@ -860,14 +978,26 @@ public sealed partial class MainForm : Form
         _openButton.Enabled = !_busy;
         _saveButton.Enabled = !_busy && _workingImage is not null;
         _saveMfdButton.Enabled = !_busy && _workingImage is not null;
-        _writeButton.Enabled = !_busy && connected && _workingImage is not null;
-        _verifyButton.Enabled = !_busy && connected && _workingImage is not null;
+        _writeButton.Enabled = !_busy && connected && HasNtag5WorkingImage;
+        _verifyButton.Enabled = !_busy && connected && HasNtag5WorkingImage;
+        _parseNdefButton.Enabled = !_busy && HasNtag5WorkingImage;
+        _insertBytesButton.Enabled = !_busy && _workingImage is not null;
         _directPreviewButton.Enabled = !_busy;
         _directWriteButton.Enabled = !_busy && connected;
         _cancelButton.Enabled = _busy;
         _memoryGrid.ReadOnly = _busy || _workingImage is null;
         _connectionStateLabel.Text = connected ? "已连接" : "未连接";
         _connectionStateLabel.ForeColor = connected ? Accent : Color.FromArgb(97, 97, 97);
+        _toolTip.SetToolTip(
+            _writeButton,
+            HasNtag5WorkingImage
+                ? "写入当前 NTAG5 用户区编辑结果"
+                : "S50 / MIFARE Classic 文件仅支持离线编辑和保存，不能通过 NTA5332 写入");
+        _toolTip.SetToolTip(
+            _verifyButton,
+            HasNtag5WorkingImage
+                ? "读取并校验 NTAG5 用户区"
+                : "S50 / MIFARE Classic 文件不能用 NTAG5 I2C 接口校验");
     }
 
     private void TryUserAction(string title, Action action)
