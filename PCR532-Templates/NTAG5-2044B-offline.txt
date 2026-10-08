@@ -1,0 +1,5 @@
+# NTA5332 / NTAG5 I2C user EEPROM, 2044 bytes, offline editor only.
+# ISO15693 / Type 5: PCR532 PN532 cannot read or write this tag over RF.
+# Raw bytes preserved; NOT a MIFARE Classic or Type 2 card image.
+0; 4; Chartreuse; DarkGray; Type 5 CC (if present)
+4; 2040; White; DarkGray; NTAG5 user EEPROM / TLV / NDEF

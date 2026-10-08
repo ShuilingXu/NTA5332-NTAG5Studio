@@ -7,7 +7,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>Ntag5Studio</AssemblyName>
     <RootNamespace>Ntag5Studio</RootNamespace>
-    <Version>1.3.0</Version>
+    <Version>1.4.1</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
 </Project>

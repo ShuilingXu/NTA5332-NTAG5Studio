@@ -50,7 +50,7 @@ public static class BackupService
             path,
             data,
             source,
-            "mifare-classic-raw-dump/v1",
+            kind == CardDumpKind.Type2Raw ? "type2-raw-dump/v1" : "mifare-classic-raw-dump/v1",
             $"{displayName} raw {(mfdExtension ? ".mfd" : "dump")}",
             kind);
     }
@@ -68,14 +68,16 @@ public static class BackupService
 
         var isNtag5 = kind == CardDumpKind.Ntag5UserMemory;
         var blockSize = CardDumpFormat.GetLogicalBlockSize(kind);
-        var blockCount = CardDumpFormat.GetLogicalBlockCount(kind);
+        var blockCount = CardDumpFormat.GetLogicalBlockCount(kind, data.Length);
 
         var metadata = new BackupMetadata(
             Schema: schema,
             Device: CardDumpFormat.GetDisplayName(kind),
             Region: isNtag5
                 ? "I2C user EEPROM blocks 0x0000-0x01FE"
-                : $"Linear MIFARE Classic memory image, {blockCount} blocks",
+                : kind == CardDumpKind.Type2Raw
+                    ? $"Linear Type 2 memory image, {blockCount} pages (including manufacturer/configuration pages)"
+                    : $"Linear MIFARE Classic memory image, {blockCount} blocks",
             BlockSize: blockSize,
             BlockCount: blockCount,
             ByteCount: data.Length,

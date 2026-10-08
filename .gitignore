@@ -1,0 +1,5 @@
+.tools/
+dist/
+**/bin/
+**/obj/
+artifacts/

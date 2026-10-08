@@ -11,6 +11,53 @@ if (args.Length == 2 && args[0] == "--render-previews")
     return;
 }
 
+if (args.Length == 3 && args[0] == "--hardware-check")
+{
+    Directory.CreateDirectory(args[2]);
+    using var device = new SpbNtag5Device();
+    device.Connect(SpbNtag5Device.DefaultDevicePath);
+    Console.WriteLine("NTAG5 " + device.ReadRuntimeStatus().UserMemoryMappingDisplay);
+    var image = device.ReadUserMemory();
+    var imagePath = Path.Combine(args[2], "NTAG5-hardware-read.bin");
+    BackupService.Save(imagePath, image, "Read-only hardware compatibility verification");
+    Console.WriteLine($"NTAG5 READ OK {image.Length} bytes SHA256 {Ntag5Memory.Sha256(image)}");
+    var pcr = new Pcr532Service(args[1]);
+    pcr.Configure("COM8", 115200);
+    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+    var result = await pcr.DetectCardAsync(null, timeout.Token);
+    File.WriteAllText(Path.Combine(args[2], "PCR532-detect.txt"), result.CombinedOutput);
+    Assert(result.Success, "PCR532 real reader detection");
+    Console.WriteLine(result.CombinedOutput);
+    return;
+}
+
+if (args.Length == 3 && args[0] == "--verify-pcr-files")
+{
+    Directory.CreateDirectory(args[2]);
+    var count = 0;
+    foreach (var path in Directory.GetFiles(args[1], "*.dump"))
+    {
+        var original = BackupService.LoadDump(path);
+        var output = Path.Combine(args[2], Path.GetFileName(path));
+        BackupService.SaveCardDump(output, original.Bytes, "PCR532 compatibility round trip", original.Kind, false);
+        Assert(File.ReadAllBytes(path).SequenceEqual(BackupService.LoadDump(output).Bytes), "real PCR532 byte equality");
+        Console.WriteLine($"PASS {Path.GetFileName(path)} {original.DisplayName} {original.Bytes.Length} bytes");
+        count++;
+    }
+    Console.WriteLine($"PCR532 ROUNDTRIP OK {count} files");
+    return;
+}
+
+if (args.Length == 3 && args[0] == "--export-emulation")
+{
+    var source = BackupService.LoadDump(args[1]);
+    var converted = Pcr532EmulationFormat.Convert(source.Bytes, source.Kind);
+    BackupService.SaveCardDump(args[2], converted.Bytes, "NDEF emulator-only conversion; not a physical card backup", CardDumpKind.Type2Raw, false);
+    Assert(Pcr532EmulationFormat.ExtractNdef(converted.Bytes, CardDumpKind.Type2Raw).SequenceEqual(converted.NdefMessage), "real image NDEF preserved");
+    Console.WriteLine($"EMULATION EXPORT OK {converted.Profile} {converted.Bytes.Length} bytes, NDEF {converted.NdefMessage.Length} bytes SHA256 {Ntag5Memory.Sha256(converted.NdefMessage)}");
+    return;
+}
+
 var tests = new (string Name, Action Run)[]
 {
     ("用户区边界", TestMemoryBounds),
@@ -22,6 +69,8 @@ var tests = new (string Name, Action Run)[]
     ("备份及元数据", TestBackup),
     ("MFD 原始 dump", TestMfdDump),
     ("S50 文件识别", TestMifareClassicDump),
+    ("Type 2 文件与 NDEF", TestType2Dump),
+    ("PCR532 模拟格式转换", TestEmulationFormat),
     ("PCR532 配置与识别", TestPcr532Service),
     ("运行状态解析", TestRuntimeStatus),
     ("供应商设备路径", TestDevicePath),
@@ -192,6 +241,84 @@ static void TestPcr532Service()
     Assert(card.CardType.Contains("S50", StringComparison.Ordinal), "S50 card detection");
     Assert(card.Uid == "11223344", "card UID parse");
     Assert(card.Sak == "08", "card SAK parse");
+}
+
+static void TestType2Dump()
+{
+    foreach (var length in new[] { 64, 80, 144, 164, 180, 192, 212, 216, 232, 256, 540, 572, 924, 936, 1020 })
+    {
+        var bytes = Enumerable.Range(0, length).Select(i => (byte)i).ToArray();
+        var path = Path.Combine(Environment.CurrentDirectory, $"ntag5-test-{Guid.NewGuid()}.dump");
+        try
+        {
+            Assert(CardDumpFormat.Detect(length) == CardDumpKind.Type2Raw, "Type 2 kind");
+            BackupService.SaveCardDump(path, bytes, "test", CardDumpKind.Type2Raw, true);
+            Assert(BackupService.LoadDump(path).Bytes.SequenceEqual(bytes), "Type 2 byte-preserving round trip");
+            Assert(CardDumpFormat.GetLogicalBlockCount(CardDumpKind.Type2Raw, length) == length / 4, "page count");
+        }
+        finally { File.Delete(path); File.Delete(path + ".json"); }
+    }
+    var image = new byte[180];
+    new byte[] { 0xE1, 0x10, 0x12, 0x00 }.CopyTo(image, 12);
+    // URI message for https://example.com.
+    new byte[] { 0x03, 0x10, 0xD1, 0x01, 0x0C, 0x55, 0x04,
+        0x65, 0x78, 0x61, 0x6D, 0x70, 0x6C, 0x65, 0x2E, 0x63, 0x6F, 0x6D, 0xFE }.CopyTo(image, 16);
+    Assert(NdefParser.ParseType2Image(image).Contains("https://example.com"), "Type 2 URI");
+    image[12] = 0;
+    Assert(NdefParser.ParseType2Image(image).Contains("没有 Type 2"), "missing CC");
+    foreach (var length in new[] { 0, 63, 181, 2043, 2045 })
+    {
+        try { CardDumpFormat.Detect(length); throw new InvalidOperationException("accepted malformed dump"); }
+        catch (ArgumentException) { }
+    }
+}
+
+static void TestEmulationFormat()
+{
+    foreach (var (payloadSize, expectedSize) in new[] { (12, 180), (200, 540), (500, 924), (860, 924) })
+    {
+        var image = new byte[Ntag5Memory.UserByteCount];
+        new byte[] { 0xE1, 0x40, 0x80, 0x09 }.CopyTo(image, 0);
+        var message = new byte[7 + payloadSize];
+        message[0] = 0xC2; // one MIME record with four-byte payload length
+        message[1] = 1;
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(message.AsSpan(2, 4), (uint)payloadSize);
+        message[6] = (byte)'x';
+        image[4] = 3;
+        image[5] = 0xFF;
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16BigEndian(image.AsSpan(6, 2), (ushort)message.Length);
+        message.CopyTo(image, 8);
+        image[8 + message.Length] = 0xFE;
+        var converted = Pcr532EmulationFormat.Convert(image, CardDumpKind.Ntag5UserMemory);
+        Assert(converted.Bytes.Length == expectedSize, "emulation profile capacity");
+        Assert(converted.Bytes[12] == 0xE1 && converted.Bytes[15] == 0x0F, "read-only Type 2 CC at page 3");
+        Assert(Pcr532EmulationFormat.ExtractNdef(converted.Bytes, CardDumpKind.Type2Raw).SequenceEqual(message), "NDEF records unchanged");
+        // The source remains untouched.
+        Assert(image[0] == 0xE1 && image[4] == 3, "Type 5 original unchanged");
+        image[8] = 0x42; // missing MB
+        ExpectInvalid(() => Pcr532EmulationFormat.Convert(image, CardDumpKind.Ntag5UserMemory));
+    }
+    var empty = new byte[Ntag5Memory.UserByteCount];
+    ExpectInvalid(() => Pcr532EmulationFormat.Convert(empty, CardDumpKind.Ntag5UserMemory));
+    empty[0] = 0xE1;
+    empty[4] = 3; empty[5] = 0xFF; empty[6] = 0xFF; empty[7] = 0xFF;
+    ExpectInvalid(() => Pcr532EmulationFormat.Convert(empty, CardDumpKind.Ntag5UserMemory));
+    ExpectInvalid(() => Pcr532EmulationFormat.Convert(new byte[1024], CardDumpKind.MifareClassic1K));
+    // Complete valid message that cannot fit in the largest profile must not be truncated.
+    var oversized = new byte[Ntag5Memory.UserByteCount];
+    oversized[0] = 0xE1; oversized[4] = 3; oversized[5] = 0xFF;
+    System.Buffers.Binary.BinaryPrimitives.WriteUInt16BigEndian(oversized.AsSpan(6, 2), 868);
+    oversized[8] = 0xC2; oversized[9] = 1;
+    System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(oversized.AsSpan(10, 4), 861);
+    oversized[14] = (byte)'x';
+    ExpectInvalid(() => Pcr532EmulationFormat.Convert(oversized, CardDumpKind.Ntag5UserMemory));
+}
+
+static void ExpectInvalid(Action action)
+{
+    try { action(); }
+    catch (InvalidDataException) { return; }
+    throw new InvalidOperationException("Expected invalid emulation input to be rejected");
 }
 
 static void TestDevicePath()

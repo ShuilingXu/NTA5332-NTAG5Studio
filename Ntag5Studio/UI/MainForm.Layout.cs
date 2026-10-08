@@ -152,7 +152,13 @@ public sealed partial class MainForm
         saveItem.Click += (_, _) => SaveBackup();
         var exportItem = new ToolStripMenuItem("导出 MFD...");
         exportItem.Click += (_, _) => SaveMfdDump();
-        fileMenu.DropDownItems.AddRange([openItem, saveItem, exportItem]);
+        var pcrExportItem = new ToolStripMenuItem("导出到 PCR532 文件目录...");
+        pcrExportItem.Click += (_, _) => ExportToPcr532();
+        var pcrFolderItem = new ToolStripMenuItem("打开 PCR532 文件目录");
+        pcrFolderItem.Click += (_, _) => OpenPcr532DumpFolder();
+        var emulateExportItem = new ToolStripMenuItem("导出 PCR532 模拟标签文件（NDEF）...");
+        emulateExportItem.Click += (_, _) => ExportPcr532Emulation();
+        fileMenu.DropDownItems.AddRange([openItem, saveItem, exportItem, pcrExportItem, emulateExportItem, pcrFolderItem]);
 
         var deviceMenu = new ToolStripMenuItem("设备");
         var ntagDeviceItem = new ToolStripMenuItem("NTAG5 内置模块");
@@ -493,7 +499,7 @@ public sealed partial class MainForm
             RowCount = 3,
             Padding = Padding.Empty
         };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 118));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 236));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.Controls.Add(BuildPcrConnectionPanel(), 0, 0);
@@ -510,7 +516,7 @@ public sealed partial class MainForm
         var flow = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill,
-            WrapContents = false,
+            WrapContents = true,
             Padding = new Padding(4, 4, 4, 2)
         };
         flow.Controls.Add(new Label { Text = "串口", AutoSize = true, Margin = new Padding(0, 7, 7, 0) });
@@ -537,6 +543,7 @@ public sealed partial class MainForm
         flow.Controls.Add(_pcrInstallDriverButton);
 
         _pcrRuntimeLabel.Text = "运行组件：检测中";
+        _toolTip.SetToolTip(_pcrRuntimeLabel, _pcr532.RuntimeDirectory);
         _pcrRuntimeLabel.AutoSize = true;
         _pcrRuntimeLabel.ForeColor = Color.FromArgb(90, 90, 90);
         _pcrRuntimeLabel.Margin = new Padding(8, 7, 0, 0);
@@ -655,6 +662,9 @@ public sealed partial class MainForm
         ConfigureCommandButton(_pcrType2ReadButton, "读取原始备份", 144, primary: true);
         ConfigureCommandButton(_pcrType2WriteButton, "恢复原始备份", 144);
         buttons.Controls.AddRange([_pcrType2ReadButton, _pcrType2WriteButton]);
+        var type2Note = new Label { Text = "读取后可编辑并原样保存。\r\nNTAG5：仅离线文件互通。", AutoSize = true, MaximumSize = new Size(200, 0), Margin = new Padding(0, 8, 0, 0) };
+        _toolTip.SetToolTip(type2Note, Pcr532Service.RadioCompatibilityNote);
+        buttons.Controls.Add(type2Note);
         group.Controls.Add(buttons);
         return group;
     }

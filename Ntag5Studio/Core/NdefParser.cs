@@ -41,6 +41,23 @@ public static class NdefParser
         return output.ToString().TrimEnd();
     }
 
+    public static string ParseType2Image(byte[] data)
+    {
+        CardDumpFormat.Validate(data, CardDumpKind.Type2Raw);
+        var output = new StringBuilder();
+        output.AppendLine("NFC Forum Type 2 原始页面镜像");
+        if (data[12] != 0xE1)
+        {
+            output.AppendLine("页面 3 没有 Type 2 Capability Container；不按 NDEF 解读制造商/OTP 内容。");
+            return output.ToString().TrimEnd();
+        }
+        var userLength = Math.Min(data[14] * 8, data.Length - 16);
+        output.AppendLine($"  CC: {HexCodec.ToSpacedHex(data.AsSpan(12, 4))}");
+        output.AppendLine($"  NDEF 区容量: {data[14] * 8} 字节；镜像中可用: {userLength} 字节");
+        ParseTlvs(data.AsSpan(0, 16 + userLength), 16, output);
+        return output.ToString().TrimEnd();
+    }
+
     private static void ParseTlvs(ReadOnlySpan<byte> data, int offset, StringBuilder output)
     {
         var tlvNumber = 0;

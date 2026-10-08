@@ -196,8 +196,8 @@ public sealed partial class MainForm : Form
     private void ConfigurePcr532()
     {
         var baud = ParsePcrBaudRate();
-        var configPath = _pcr532.Configure(_pcrPortBox.Text, baud);
-        AppendPcrLog($"libnfc 配置：{configPath} · pn532_uart:{_pcrPortBox.Text.Trim().ToUpperInvariant()}:{baud}");
+        var connection = _pcr532.Configure(_pcrPortBox.Text, baud);
+        AppendPcrLog($"libnfc 设备：{connection}");
     }
 
     private int ParsePcrBaudRate()
@@ -500,6 +500,11 @@ public sealed partial class MainForm : Form
             }
 
             AppendLog($"PCR532 Type 2 备份完成：{path}（{new FileInfo(path).Length} 字节）");
+            var dump = BackupService.LoadDump(path);
+            if (!dump.IsType2) throw new IOException("读取结果不是支持的 Type 2 页面镜像。");
+            BackupService.SaveCardDump(path, dump.Bytes, "PCR532 Type 2 读取", dump.Kind, mfdExtension: true);
+            _baselineImage = (byte[])dump.Bytes.Clone();
+            SetWorkingImage(dump.Bytes, $"PCR532 Type 2 · {Path.GetFileName(path)}", dump.Kind);
             SetStatus("Ultralight / NTAG 备份完成");
         });
     }
@@ -517,6 +522,8 @@ public sealed partial class MainForm : Form
         {
             throw new InvalidOperationException("Type 2 备份文件为空。 ");
         }
+        if (!BackupService.LoadDump(path).IsType2)
+            throw new InvalidOperationException("请选择 Type 2 原始页面镜像；NTAG5 / MIFARE Classic 文件不能恢复到 Type 2 卡片。");
 
         if (MessageBox.Show(
                 this,
@@ -783,7 +790,7 @@ public sealed partial class MainForm : Form
                 Filter = "原始卡片文件 (*.bin;*.mfd;*.dump)|*.bin;*.mfd;*.dump|NTAG5 原始备份 (*.bin)|*.bin|PCR532/libnfc 文件 (*.mfd;*.dump)|*.mfd;*.dump|所有文件 (*.*)|*.*",
                 CheckFileExists = true,
                 Multiselect = false,
-                Title = "打开 NTAG5 或 MIFARE Classic 原始卡片文件"
+                Title = "打开 NTAG5、MIFARE Classic 或 Type 2 原始卡片文件"
             };
             if (dialog.ShowDialog(this) != DialogResult.OK)
             {
@@ -815,8 +822,8 @@ public sealed partial class MainForm : Form
             MessageBox.Show(
                 this,
                 $"已识别为 {dump.DisplayName} 原始文件，共 {dump.Bytes.Length} 字节。\r\n\r\n" +
-                "可以离线查看、编辑、编码转换并按原尺寸保存。NTA5332 不是 MIFARE Classic 读写器，因此不会启用“写入变化”和芯片校验。",
-                "S50 / MIFARE Classic 文件已载入",
+                "可以查看、编辑、编码转换并按原尺寸保存，保存后可在 PCR532 程序中打开。请使用 PCR532 页进行外部卡片读写。",
+                "PCR532 文件已载入",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
         });
@@ -832,7 +839,7 @@ public sealed partial class MainForm : Form
                 Filter = "原始卡片文件 (*.bin;*.mfd;*.dump)|*.bin;*.mfd;*.dump|NTAG5 原始备份 (*.bin)|*.bin|PCR532/libnfc 文件 (*.mfd;*.dump)|*.mfd;*.dump|所有文件 (*.*)|*.*",
                 AddExtension = true,
                 DefaultExt = "bin",
-                FileName = $"NTA5332-user-{DateTime.Now:yyyyMMdd-HHmmss}.bin",
+                FileName = $"{(_workingDumpKind == CardDumpKind.Ntag5UserMemory ? "NTA5332-user" : _workingDumpKind == CardDumpKind.Type2Raw ? "Type2" : "MIFARE")}-{DateTime.Now:yyyyMMdd-HHmmss}.bin",
                 Title = $"保存 {CardDumpFormat.GetDisplayName(_workingDumpKind)} 原始文件"
             };
             if (dialog.ShowDialog(this) != DialogResult.OK)
@@ -872,6 +879,59 @@ public sealed partial class MainForm : Form
             AppendLog($"文件内容为 {data.Length} 字节 {CardDumpFormat.GetDisplayName(_workingDumpKind)} 原始镜像，不包含自定义文件头。");
             AppendLog($"元数据已保存：{dialog.FileName}.json");
             SetStatus("MFD dump 与校验元数据保存完成");
+        });
+    }
+
+    private string GetPcrDumpDirectory()
+    {
+        if (!_pcr532.IsRuntimeAvailable) throw new InvalidOperationException("未找到 PCR532 安装目录。");
+        var directory = Path.Combine(_pcr532.RuntimeDirectory, "nfc-data", "dumpfiles");
+        Directory.CreateDirectory(directory);
+        return directory;
+    }
+
+    private void OpenPcr532DumpFolder() => TryUserAction("打开 PCR532 文件目录", () =>
+        Process.Start(new ProcessStartInfo("explorer.exe", GetPcrDumpDirectory()) { UseShellExecute = true }));
+
+    private void ExportToPcr532()
+    {
+        TryUserAction("导出到 PCR532", () =>
+        {
+            var bytes = GetWorkingSnapshot();
+            using var dialog = new SaveFileDialog
+            {
+                InitialDirectory = GetPcrDumpDirectory(),
+                Filter = "PCR532 原始文件 (*.dump)|*.dump|原始二进制 (*.bin)|*.bin",
+                DefaultExt = "dump", AddExtension = true,
+                FileName = $"{(_workingDumpKind == CardDumpKind.Ntag5UserMemory ? "NTAG5-offline" : _workingDumpKind == CardDumpKind.Type2Raw ? "Type2" : "MIFARE")}-{DateTime.Now:yyyyMMdd-HHmmss}.dump"
+            };
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            BackupService.SaveCardDump(dialog.FileName, bytes, _imageSource, _workingDumpKind, mfdExtension: false);
+            AppendLog($"已导出 PCR532 原始文件：{dialog.FileName}；{bytes.Length} 字节，SHA-256 {Ntag5Memory.Sha256(bytes)}");
+            if (HasNtag5WorkingImage) AppendLog(Pcr532Service.RadioCompatibilityNote);
+            SetStatus("已导出；在 PCR532 文件编辑器打开该文件");
+        });
+    }
+
+    private void ExportPcr532Emulation()
+    {
+        TryUserAction("导出模拟标签", () =>
+        {
+            var converted = Pcr532EmulationFormat.Convert(GetWorkingSnapshot(), _workingDumpKind);
+            using var dialog = new SaveFileDialog
+            {
+                InitialDirectory = GetPcrDumpDirectory(),
+                Filter = "PCR532 Type 2 模拟文件 (*.dump)|*.dump",
+                DefaultExt = "dump", AddExtension = true,
+                FileName = $"PCR532-emulate-{converted.Profile}-{DateTime.Now:yyyyMMdd-HHmmss}.dump",
+                Title = "保存模拟专用 NDEF 镜像（不保留原芯片 UID/Type 5 协议）"
+            };
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            BackupService.SaveCardDump(dialog.FileName, converted.Bytes,
+                $"NDEF simulation conversion from {_imageSource}; original UID/protocol not preserved; emulator-only", CardDumpKind.Type2Raw, false);
+            AppendLog($"模拟文件：{dialog.FileName}；{converted.Profile} 布局 / {converted.Bytes.Length} 字节；NDEF {converted.NdefMessage.Length} 字节原样保留。");
+            AppendLog("该文件用于 PCR532 模拟 NDEF，不是原芯片完整克隆或实体卡恢复备份。模拟组件使用自身 UID，仅响应读取；手机识别需实际测试。");
+            SetStatus("模拟文件已导出；在 PCR532 的模拟 NFC Tag 功能中载入此文件");
         });
     }
 
@@ -1107,8 +1167,9 @@ public sealed partial class MainForm : Form
         try
         {
             var rowCount = (_workingImage.Length + Ntag5Memory.BytesPerBlock - 1) / Ntag5Memory.BytesPerBlock;
-            if (_memoryGrid.Rows.Count != rowCount)
+            if (_memoryGrid.Rows.Count != rowCount || !Equals(_memoryGrid.Tag, _workingDumpKind))
             {
+                _memoryGrid.Tag = _workingDumpKind;
                 _memoryGrid.Rows.Clear();
                 _memoryGrid.Columns[0].HeaderText = CardDumpFormat.IsMifareClassic(_workingDumpKind) ? "块.组" : "块";
                 for (var rowIndex = 0; rowIndex < rowCount; rowIndex++)
@@ -1294,16 +1355,15 @@ public sealed partial class MainForm : Form
         TryUserAction("跳转", () =>
         {
             var block = ParseHexNumber(_jumpBlockBox.Text, "块地址");
-            var maxBlock = CardDumpFormat.IsMifareClassic(_workingDumpKind)
-                ? CardDumpFormat.GetLogicalBlockCount(_workingDumpKind) - 1
-                : Ntag5Memory.LastI2cUserBlock;
+            var maxBlock = _workingImage is null ? Ntag5Memory.LastI2cUserBlock
+                : CardDumpFormat.GetLogicalBlockCount(_workingDumpKind, _workingImage.Length) - 1;
             if (block < 0 || block > maxBlock)
             {
                 throw new ArgumentOutOfRangeException(
                     nameof(block),
                     CardDumpFormat.IsMifareClassic(_workingDumpKind)
                         ? $"块地址必须在 00-{maxBlock:X2} 之间。"
-                        : "块地址必须在 000-1FE 之间。");
+                        : $"块/页面地址必须在 000-{maxBlock:X3} 之间。");
             }
 
             _memoryGrid.ClearSelection();
@@ -1529,9 +1589,10 @@ public sealed partial class MainForm : Form
     {
         TryUserAction("Type 5 / NDEF 解析", () =>
         {
-            var data = GetNtag5WorkingSnapshot();
-            _ndefOutputBox.Text = NdefParser.ParseType5Image(data);
-            SetStatus("Type 5 TLV / NDEF 解析完成");
+            var data = GetWorkingSnapshot();
+            _ndefOutputBox.Text = _workingDumpKind == CardDumpKind.Type2Raw
+                ? NdefParser.ParseType2Image(data) : NdefParser.ParseType5Image(GetNtag5WorkingSnapshot());
+            SetStatus("TLV / NDEF 解析完成");
         });
     }
 
@@ -1548,7 +1609,7 @@ public sealed partial class MainForm : Form
         _saveMfdButton.Enabled = !_busy && _workingImage is not null;
         _writeButton.Enabled = !_busy && connected && HasNtag5WorkingImage;
         _verifyButton.Enabled = !_busy && connected && HasNtag5WorkingImage;
-        _parseNdefButton.Enabled = !_busy && HasNtag5WorkingImage;
+        _parseNdefButton.Enabled = !_busy && _workingImage is not null && (HasNtag5WorkingImage || _workingDumpKind == CardDumpKind.Type2Raw);
         _insertBytesButton.Enabled = !_busy && _workingImage is not null;
         _directPreviewButton.Enabled = !_busy;
         _directWriteButton.Enabled = !_busy && connected;

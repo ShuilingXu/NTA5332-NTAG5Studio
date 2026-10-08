@@ -28,6 +28,8 @@ public sealed record Pcr532CardInfo(string Uid, string Atqa, string Sak, string 
 
 public sealed partial class Pcr532Service
 {
+    private string? _connectionString;
+    public const string RadioCompatibilityNote = "PCR532 / PN532 支持 ISO14443A/B；NTA5332 / NTAG5 使用 ISO15693 (Type 5)，不能由此读卡器直接射频读写。原始文件可离线查看。";
     private static readonly string[] RequiredTools =
     [
         @"nfc-bin\nfc-list.exe",
@@ -55,8 +57,11 @@ public sealed partial class Pcr532Service
     {
         var candidates = new List<string>
         {
+            Environment.GetEnvironmentVariable("PCR532_HOME") ?? string.Empty,
+            LoadRuntimeSetting() ?? string.Empty,
             Path.Combine(AppContext.BaseDirectory, "PCR532"),
-            Path.Combine(Environment.CurrentDirectory, "PCR532")
+            Path.Combine(Environment.CurrentDirectory, "PCR532"),
+            @"D:\soft\PCR532"
         };
 
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
@@ -68,6 +73,12 @@ public sealed partial class Pcr532Service
         return candidates
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .FirstOrDefault(candidate => File.Exists(Path.Combine(candidate, @"nfc-bin\nfc-list.exe")));
+    }
+
+    private static string? LoadRuntimeSetting()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "PCR532.path.txt");
+        return File.Exists(path) ? File.ReadAllText(path).Trim() : null;
     }
 
     public static IReadOnlyList<string> GetSerialPorts()
@@ -106,10 +117,8 @@ public sealed partial class Pcr532Service
             throw new ArgumentOutOfRangeException(nameof(baudRate), "PCR532 速度必须为 115200 或 921600。 ");
         }
 
-        var config = BuildConfiguration(normalizedPort, baudRate);
-        var path = Path.Combine(RuntimeDirectory, "libnfc.conf");
-        File.WriteAllText(path, config, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-        return path;
+        _connectionString = $"pn532_uart:{normalizedPort}:{baudRate}";
+        return _connectionString;
     }
 
     public static string BuildConfiguration(string port, int baudRate)
@@ -274,6 +283,13 @@ public sealed partial class Pcr532Service
         foreach (var argument in arguments)
         {
             startInfo.ArgumentList.Add(argument);
+        }
+        if (_connectionString is not null)
+        {
+            // Some PCR532 DLLs load a stale COM3 configuration relative to the executable.
+            // LIBNFC_DEVICE explicitly selects the configured reader without editing the vendor install.
+            startInfo.Environment["LIBNFC_DEVICE"] = _connectionString;
+            startInfo.Environment["LIBNFC_DEFAULT_DEVICE"] = _connectionString;
         }
 
         var shownArguments = string.Join(" ", startInfo.ArgumentList.Select(QuoteForDisplay));

@@ -81,6 +81,19 @@ NTA5332 数据手册明确规定 EEPROM 块为 4 字节，I²C 写 EEPROM 时 N=
 & 'C:\Program Files\dotnet\dotnet.exe' run --project .\Ntag5Studio.SelfTest\Ntag5Studio.SelfTest.csproj -c Release
 ```
 
-本机未枚举到 `ACPI\NTAG5332`，因此发布前完成的是驱动二进制/样例接口核对、编译、离线自检和界面检查；真实硬件读写需要在装有该模块的目标机器上验证。
+### 1.4.0 本机 PCR532 互通（2026-10-08）
 
-本机也未枚举到 PCR532 串口。PCR532 的配置生成、卡型识别、命令参数、文件格式、取消处理和界面均已离线验证；真实射频读写以及不同魔术卡代际的兼容性仍需在目标硬件上实测。
+- 自动发现本机 `D:\soft\PCR532`，也可通过发布目录中的 `PCR532.path.txt` 或环境变量 `PCR532_HOME` 指定其它安装位置。
+- 每次命令通过 `LIBNFC_DEVICE` / `LIBNFC_DEFAULT_DEVICE` 显式选择界面上的串口，避免 PCR532 DLL 读取旧 COM3 配置；当前程序不改写原程序的配置文件。
+- 支持常见 Type 2 原始页面镜像（64/80/144/164/180/192/212/216/232/256/540/572/924/936/1020 字节），读取后可查看、编辑、编码转换、解析 Type 2 NDEF 并按原始字节数保存。容量识别表示文件布局，不能单凭文件长度确认芯片型号。
+- “文件 → 导出到 PCR532 文件目录”默认导出到 `D:\soft\PCR532\nfc-data\dumpfiles`，保持原始字节，不添加文件头，不补齐或截断数据。PCR532 附带的 `ChameleonMiniGUI.exe` 文件编辑器可打开 `.bin/.dump/.mfd`。
+- 已向原程序的 `Templates` 目录安装 `NTAG5-2044B-offline.txt` 模板；在原文件编辑器选择该模板和“4字节一组”，可离线查看 NTAG5 的原始用户区。
+- NTAG5 的 ISO15693 / Type 5 射频协议不受 PN532 支持。NTAG5 文件只能在 PCR532 编辑器中离线打开；不能当成 MIFARE / Type 2 镜像写到外部卡片。NTA5332 内置模块也不能用来读取外部 MIFARE 卡。规格参见 [NXP PN532 协议支持表](https://www.nxp.com/docs/en/product-selector-guide/75016728.pdf) 和 [NTA5332 数据手册](https://www.nxp.com/docs/en/data-sheet/NTA5332.pdf)。
+
+本机实测：NTAG5 正常枚举并成功读取全部 2044 字节 EEPROM；PCR532 成功打开 COM8 / 115200，检测时未发现 ISO14443A 卡片。PCR532 原目录中的 30 个备份文件载入、导出后逐字节一致。另调用原程序文件编辑器实际使用的二进制解析/保存组件，验证 NTAG5 的 2044 字节镜像可完整读取并原样保存。14 项自检通过。验证过程未写芯片或外部卡片，真实射频写卡尚未验证。
+
+### 1.4.1 PCR532 模拟 NDEF 导出
+
+新增“文件 → 导出 PCR532 模拟标签文件（NDEF）”，将 NTAG5 / Type 2 镜像中的 NDEF 消息转换为原模拟组件需要的 Type 2 页面布局，按容量选择 NTAG213/215/216。NDEF 全部字节原样保留；原始备份不变。模拟文件只用于模拟，不保留原 NTAG5 的 UID/射频协议或 EEPROM 的其它区域，不能用作实体卡恢复备份。
+
+本机实际的 125 字节 NDEF 已转换成 180 字节文件，并通过 COM8 启动 PCR532 原 `nfcemulatetag.exe`，进入模拟等待状态。手机识别和具体业务功能尚未实测。15 项自检通过；详见 `PCR532-Compatibility.md`。
